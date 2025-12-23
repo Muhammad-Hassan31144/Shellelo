@@ -1220,8 +1220,8 @@ function renderFileManager() {
     <div class="card toolbar">
         <div class="path-nav">
             <span class="path-label">📍</span>
-            <input type="text" id="currentPath" class="form-control path-input" value="<?php echo htmlspecialchars($currentPath); ?>" readonly>
-            <button class="btn btn-secondary btn-sm" onclick="goToPath()">Go</button>
+            <input type="text" id="currentPath" class="form-control path-input" value="<?php echo htmlspecialchars($currentPath); ?>" onclick="enablePathEdit()" onkeydown="if(event.key==='Enter') navigateToPath()">
+            <button class="btn btn-secondary btn-sm" onclick="navigateToPath()">Go</button>
             <button class="btn btn-secondary btn-sm" onclick="goUp()">⬆️ Up</button>
             <button class="btn btn-secondary btn-sm" onclick="refreshFiles()">🔄</button>
         </div>
@@ -1437,12 +1437,18 @@ function goUp() {
     }
     loadFiles();
 }
-function goToPath() {
+
+function enablePathEdit() {
     var input = document.getElementById('currentPath');
-    input.readOnly = false; input.focus(); input.select();
-    input.onblur = function() { input.readOnly = true; currentPath = input.value; loadFiles(); };
-    input.onkeydown = function(e) { if (e.key === 'Enter') input.blur(); };
+    input.select();
 }
+
+function navigateToPath() {
+    var input = document.getElementById('currentPath');
+    currentPath = input.value;
+    loadFiles();
+}
+
 function refreshFiles() { loadFiles(); toast('Refreshed'); }
 
 function editFile(path) {
