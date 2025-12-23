@@ -1,12 +1,18 @@
 <?php
 /**
  * Shellello - Web Admin Panel
- * PHP Edition v2.4.0
+ * PHP Edition v2.5.0
  * 
  * PHP Version Requirements:
- * - Minimum: PHP 7.0+ (required for null coalescing operator, random_bytes)
+ * - Minimum: PHP 7.0+ (required for null coalescing operator ??, random_bytes)
  * - Recommended: PHP 7.4+ or PHP 8.0+
- * - Tested: PHP 7.0, 7.1, 7.2, 7.3, 7.4, 8.0, 8.1, 8.2, 8.3
+ * - Tested: PHP 7.0, 7.1, 7.2, 7.3, 7.4, 8.0, 8.1, 8.2, 8.3, 8.4
+ * 
+ * Features requiring PHP 7.0+:
+ *   - Null coalescing operator (??)
+ *   - random_bytes() for secure tokens
+ *   - Return type declarations
+ *   - Scalar type declarations
  * 
  * Built: 2025-12-23
  */
@@ -32,7 +38,7 @@ ini_set('error_log', sys_get_temp_dir() . '/shellello_errors.log');
 // CONFIGURATION
 // ==========================================
 define('APP_NAME', 'Shellello Admin');
-define('APP_VERSION', '2.4.0');
+define('APP_VERSION', '2.5.0');
 define('DEBUG_MODE', false); // Set to true only during development
 
 // SHA-256 hash of your password
@@ -102,7 +108,7 @@ function sanitizeErrorMessage($error) {
 
 function getClientIp() {
     // Priority: LOCAL_ADDR (if set) > X-Forwarded-For > Client-IP > Remote-Addr > getenv fallbacks
-    $localAddr = getenv('LOCAL_ADDR') ?: (isset($_SERVER['LOCAL_ADDR']) ? $_SERVER['LOCAL_ADDR'] : null);
+    $localAddr = getenv('LOCAL_ADDR') ?: $_SERVER['LOCAL_ADDR'] ?? null;
     if ($localAddr && $localAddr !== '0.0.0.0') {
         return $localAddr;
     }
@@ -115,7 +121,7 @@ function getClientIp() {
     ];
     
     foreach ($sources as $source) {
-        $ip = getenv($source) ?: (isset($_SERVER[$source]) ? $_SERVER[$source] : null);
+        $ip = getenv($source) ?: $_SERVER[$source] ?? null;
         if ($ip && $ip !== '0.0.0.0' && $ip !== 'unknown') {
             // Handle comma-separated IPs (X-Forwarded-For)
             if (strpos($ip, ',') !== false) {
@@ -1082,7 +1088,7 @@ function renderDashboard() {
  */
 
 function renderFileManager() {
-    $currentPath = isset($_GET['path']) ? realpath($_GET['path']) : getcwd();
+    $currentPath = realpath($_GET['path'] ?? getcwd());
     if (!$currentPath) $currentPath = getcwd();
     
     ob_start();
@@ -2546,7 +2552,7 @@ function main() {
     // Handle authentication
     if (!isAuthenticated()) {
         $error = null;
-        if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['password'])) {
+        if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['password'] ?? null)) {
             if (attemptLogin($_POST['password'])) {
                 header("Location: ?page=dashboard");
                 exit;
