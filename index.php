@@ -294,13 +294,19 @@ function handleApiAction($action) {
                 $content = $_POST['content'] ?? '';
                 try {
                     if (!$path) throw new Exception('No path specified');
+                    if (!file_exists($path)) throw new Exception('File does not exist');
+                    if (!is_writable($path)) {
+                        $owner = posix_getpwuid(fileowner($path))['name'] ?? 'unknown';
+                        $perms = substr(sprintf('%o', fileperms($path)), -4);
+                        throw new Exception("Permission denied (owner: {$owner}, perms: {$perms})");
+                    }
                     if (@file_put_contents($path, $content) === false) {
-                        throw new Exception('Write failed');
+                        throw new Exception('Write operation failed');
                     }
                     $response = ['status' => 'success', 'message' => 'File saved successfully'];
                 } catch (Exception $e) {
                     logError('save_file', $e);
-                    $response = ['status' => 'error', 'message' => 'Failed to save file'];
+                    $response = ['status' => 'error', 'message' => sanitizeErrorMessage($e)];
                 }
                 break;
 
@@ -1038,6 +1044,10 @@ function renderDashboard() {
             <div class="info-row">
                 <span class="info-label">Your IP</span>
                 <span class="info-value"><?php echo getClientIp(); ?></span>
+            </div>
+            <div class="info-row">
+                <span class="info-label">PHP Process User</span>
+                <span class="info-value"><?php echo $processUser; ?></span>
             </div>
             <div class="info-row">
                 <span class="info-label">Memory Usage</span>
@@ -1967,6 +1977,7 @@ function renderTerminal() {
     $cwd = getcwd();
     $user = get_current_user();
     $hostname = php_uname('n');
+    $processUser = posix_getpwuid(posix_geteuid())['name'] ?? $user; // Actual process user (e.g., www-data)
     
     ob_start();
 ?>
