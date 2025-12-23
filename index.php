@@ -1,9 +1,20 @@
 <?php
 /**
  * Shellello - Web Admin Panel
- * PHP Edition v1.0.0
- * Built: 2025-11-28 16:43:20
+ * PHP Edition v2.4.0
+ * 
+ * PHP Version Requirements:
+ * - Minimum: PHP 7.0+ (required for null coalescing operator, random_bytes)
+ * - Recommended: PHP 7.4+ or PHP 8.0+
+ * - Tested: PHP 7.0, 7.1, 7.2, 7.3, 7.4, 8.0, 8.1, 8.2, 8.3
+ * 
+ * Built: 2025-12-23
  */
+
+// Check PHP version
+if (version_compare(PHP_VERSION, '7.0.0', '<')) {
+    die('Error: Shellello requires PHP 7.0 or higher. Current version: ' . PHP_VERSION);
+}
 
 // ========== 01_CONFIG ==========
 /**
