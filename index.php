@@ -226,11 +226,17 @@ function getFileList($dir) {
             if ($item === '.') continue;
             $path = $dir . DIRECTORY_SEPARATOR . $item;
             $isDir = is_dir($path);
+            $owner = 'unknown';
+            if (function_exists('posix_getpwuid')) {
+                $ownerInfo = @posix_getpwuid(@fileowner($path));
+                $owner = $ownerInfo['name'] ?? 'unknown';
+            }
             $files[] = [
                 'name' => $item,
                 'type' => $isDir ? 'dir' : 'file',
                 'size' => $isDir ? '-' : formatBytes(@filesize($path)),
                 'perms' => substr(sprintf('%o', @fileperms($path)), -4),
+                'owner' => $owner,
                 'modified' => date("Y-m-d H:i", @filemtime($path)),
                 'readable' => is_readable($path),
                 'writable' => is_writable($path)
@@ -1233,12 +1239,13 @@ function renderFileManager() {
                     <th>Name</th>
                     <th>Size</th>
                     <th>Perms</th>
+                    <th>Owner</th>
                     <th>Modified</th>
                     <th>Actions</th>
                 </tr>
             </thead>
             <tbody id="fileList">
-                <tr><td colspan="5" class="text-center text-muted">Loading...</td></tr>
+                <tr><td colspan="6" class="text-center text-muted">Loading...</td></tr>
             </tbody>
         </table>
     </div>
@@ -1379,7 +1386,7 @@ function loadFiles() {
 function renderFiles(files) {
     var tbody = document.getElementById('fileList');
     if (!files.length) {
-        tbody.innerHTML = '<tr><td colspan="5" class="text-center text-muted">Empty</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="6" class="text-center text-muted">Empty</td></tr>';
         return;
     }
     var html = '';
@@ -1403,6 +1410,7 @@ function renderFiles(files) {
             '<td><span class="file-icon">' + icon + '</span><span class="' + cls + '">' + esc(f.name) + '</span></td>' +
             '<td class="text-muted">' + f.size + '</td>' +
             '<td><code>' + f.perms + '</code></td>' +
+            '<td class="text-muted">' + (f.owner || 'unknown') + '</td>' +
             '<td class="text-muted">' + f.modified + '</td>' +
             '<td class="action-btns">' + acts + '</td></tr>';
     }
