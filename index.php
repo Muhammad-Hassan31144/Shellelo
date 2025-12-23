@@ -565,8 +565,7 @@ function renderLayout($title, $content, $activePage = 'dashboard') {
         :root {
             --primary: #3b82f6;
             --primary-dark: #1d4ed8;
-            --sidebar-bg: #0f172a;
-            --sidebar-hover: #1e293b;
+            --nav-bg: #0f172a;
             --bg: #f1f5f9;
             --card-bg: #ffffff;
             --text: #1f2937;
@@ -577,92 +576,95 @@ function renderLayout($title, $content, $activePage = 'dashboard') {
             font-family: 'Segoe UI', system-ui, sans-serif;
             background: var(--bg);
             color: var(--text);
-            display: flex;
             min-height: 100vh;
         }
-        .sidebar {
-            width: 260px;
-            background: var(--sidebar-bg);
+        .top-nav {
+            background: var(--nav-bg);
             color: white;
-            display: flex;
-            flex-direction: column;
-            position: fixed;
-            height: 100vh;
+            position: sticky;
+            top: 0;
             z-index: 100;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
         }
-        .sidebar-header {
-            padding: 1.5rem;
+        .nav-container {
+            max-width: 100%;
+            margin: 0 auto;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0 2rem;
+        }
+        .brand {
             display: flex;
             align-items: center;
             gap: 0.75rem;
-            border-bottom: 1px solid rgba(255,255,255,0.1);
+            padding: 1rem 0;
         }
-        .sidebar-header .logo { font-size: 2rem; }
-        .sidebar-header h1 { font-size: 1.25rem; font-weight: 600; }
-        .nav { flex: 1; padding: 1rem 0; overflow-y: auto; }
-        .nav a {
+        .brand .logo { font-size: 1.75rem; }
+        .brand h1 { font-size: 1.25rem; font-weight: 600; }
+        .nav-tabs {
+            display: flex;
+            gap: 0.5rem;
+        }
+        .nav-tabs a {
             display: flex;
             align-items: center;
-            gap: 0.875rem;
-            padding: 0.875rem 1.5rem;
+            gap: 0.5rem;
+            padding: 1rem 1.25rem;
             color: #94a3b8;
             text-decoration: none;
             transition: all 0.2s;
-            border-left: 3px solid transparent;
+            border-bottom: 3px solid transparent;
+            font-size: 0.95rem;
         }
-        .nav a:hover { background: var(--sidebar-hover); color: white; }
-        .nav a.active {
-            background: var(--sidebar-hover);
+        .nav-tabs a:hover { 
+            background: rgba(255,255,255,0.05);
             color: white;
-            border-left-color: var(--primary);
         }
-        .nav a .nav-icon { font-size: 1.25rem; width: 28px; text-align: center; }
-        .nav a .nav-label { font-size: 0.95rem; }
-        .sidebar-footer {
-            padding: 1rem 1.5rem;
-            border-top: 1px solid rgba(255,255,255,0.1);
+        .nav-tabs a.active {
+            color: white;
+            border-bottom-color: var(--primary);
+            background: rgba(255,255,255,0.05);
         }
-        .sidebar-footer a {
+        .nav-tabs a .nav-icon { font-size: 1.15rem; }
+        .nav-right {
+            display: flex;
+            align-items: center;
+            gap: 1.5rem;
+            font-size: 0.85rem;
+            color: #94a3b8;
+        }
+        .nav-right .session-info {
             display: flex;
             align-items: center;
             gap: 0.75rem;
+        }
+        .nav-right a {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
             color: #ef4444;
             text-decoration: none;
-            padding: 0.5rem 0;
-            font-size: 0.9rem;
+            padding: 0.5rem 0.75rem;
+            border-radius: 6px;
+            transition: all 0.2s;
         }
-        .sidebar-footer a:hover { color: #f87171; }
+        .nav-right a:hover { 
+            background: rgba(239,68,68,0.1);
+            color: #f87171;
+        }
         .main {
-            flex: 1;
-            margin-left: 260px;
-            display: flex;
-            flex-direction: column;
-            min-height: 100vh;
+            width: 100%;
         }
         .header {
             background: var(--card-bg);
-            padding: 1rem 2rem;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
+            padding: 1.5rem 2rem;
             border-bottom: 1px solid var(--border);
-            position: sticky;
-            top: 0;
-            z-index: 50;
         }
         .header h2 { font-size: 1.5rem; font-weight: 600; }
-        .header-info {
-            display: flex;
-            align-items: center;
-            gap: 1rem;
-            color: var(--text-muted);
-            font-size: 0.9rem;
-        }
         .content {
-            flex: 1;
             padding: 2rem;
-            max-width: 1600px;
-            width: 100%;
+            max-width: 100%;
             margin: 0 auto;
         }
         .card {
@@ -726,35 +728,37 @@ function renderLayout($title, $content, $activePage = 'dashboard') {
     </style>
 </head>
 <body>
-    <aside class="sidebar">
-        <div class="sidebar-header">
-            <span class="logo">🐚</span>
-            <h1><?php echo APP_NAME; ?></h1>
-        </div>
-        <nav class="nav">
-            <?php foreach ($nav as $key => $item): ?>
-                <a href="?page=<?php echo $key; ?>" class="<?php echo $activePage === $key ? 'active' : ''; ?>">
-                    <span class="nav-icon"><?php echo $item['icon']; ?></span>
-                    <span class="nav-label"><?php echo $item['label']; ?></span>
+    <nav class="top-nav">
+        <div class="nav-container">
+            <div class="brand">
+                <span class="logo">🐚</span>
+                <h1><?php echo APP_NAME; ?></h1>
+            </div>
+            <div class="nav-tabs">
+                <?php foreach ($nav as $key => $item): ?>
+                    <a href="?page=<?php echo $key; ?>" class="<?php echo $activePage === $key ? 'active' : ''; ?>">
+                        <span class="nav-icon"><?php echo $item['icon']; ?></span>
+                        <span><?php echo $item['label']; ?></span>
+                    </a>
+                <?php endforeach; ?>
+            </div>
+            <div class="nav-right">
+                <div class="session-info">
+                    <span><?php echo getSessionTime(); ?></span>
+                    <span>•</span>
+                    <span><?php echo date('M j, H:i'); ?></span>
+                </div>
+                <a href="?logout=1">
+                    <span>🚪</span>
+                    <span>Logout</span>
                 </a>
-            <?php endforeach; ?>
-        </nav>
-        <div class="sidebar-footer">
-            <a href="?logout=1">
-                <span>🚪</span>
-                <span>Logout</span>
-            </a>
+            </div>
         </div>
-    </aside>
+    </nav>
     
     <div class="main">
         <header class="header">
             <h2><?php echo htmlspecialchars($title); ?></h2>
-            <div class="header-info">
-                <span>Session: <?php echo getSessionTime(); ?></span>
-                <span>|</span>
-                <span><?php echo date('M j, Y H:i'); ?></span>
-            </div>
         </header>
         <main class="content">
             <?php echo $content; ?>
