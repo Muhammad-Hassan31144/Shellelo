@@ -8,4 +8,4 @@ ARCHITECTURE.modules
 ashx/*
 cs/*
 go/*
-jspx/*
+jspx/modules

