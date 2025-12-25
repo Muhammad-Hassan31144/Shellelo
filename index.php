@@ -325,6 +325,10 @@ function getDbConnection() {
  */
 
 function handleApiAction($action) {
+    // Clean any output buffer to prevent invalid JSON
+    while (ob_get_level()) {
+        ob_end_clean();
+    }
     header('Content-Type: application/json');
     $response = ['status' => 'error', 'message' => 'Unknown action'];
 
@@ -1229,6 +1233,10 @@ function renderDashboard() {
             <div class="info-row">
                 <span class="info-label">Your IP</span>
                 <span class="info-value"><?php echo getClientIp(); ?></span>
+            </div>
+            <div class="info-row">
+                <span class="info-label">Server IP</span>
+                <span class="info-value"><?php echo getServerIp(); ?></span>
             </div>
             <div class="info-row">
                 <span class="info-label">PHP Process User</span>
@@ -2492,16 +2500,12 @@ function renderNetwork() {
             <div class="form-group">
                 <label>Protocol</label>
                 <div class="flex-row">
-                    <span class="info-label">Session Duration</span>
-                    <span class="info-value">&lt;?php echo getSessionTime(); ?&gt;</span>
+                    <label><input type="radio" name="scheme" value="http" checked> HTTP</label>
+                    <label><input type="radio" name="scheme" value="https"> HTTPS</label>
                 </div>
             </div>
-                    <span class="info-label">Client IP</span>
-                    <span class="info-value">&lt;?php echo getClientIp(); ?&gt;</span>
-                </div>
-                <div class="info-row">
-                    <span class="info-label">Server IP</span>
-                    <span class="info-value">&lt;?php echo getServerIp(); ?&gt;</span>
+            <div class="form-group">
+                <label>Host / IP</label>
                 <input type="text" id="dlHost" class="form-control" placeholder="example.com">
             </div>
             <div class="form-group">
@@ -2545,7 +2549,17 @@ function scanPorts() {
     fd.append('target', target);
     fd.append('ports', document.getElementById('scanPorts').value);
     fetch('?action=scan_ports', {method:'POST', body:fd})
-        .then(function(r) { return r.json(); })
+        .then(function(r) {
+            if (!r.ok) throw new Error('HTTP ' + r.status);
+            return r.text().then(function(text) {
+                try {
+                    return JSON.parse(text);
+                } catch(e) {
+                    console.error('Invalid JSON response:', text);
+                    throw new Error('Server returned invalid JSON. Check console for details.');
+                }
+            });
+        })
         .then(function(data) {
             btn.disabled = false;
             btn.textContent = '🔍 Scan';
