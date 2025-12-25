@@ -1,29 +1,34 @@
 # Shellello
 
-**Version 2.4.0** | Single-File Web Administration Interface
+**Version 2.5.0** | Multi-Language Web Administration Interface
 
-A unified, proprietary web admin tool available for multiple server-side platforms.
+A unified, web admin tool available for multiple server-side platforms with consistent UI and functionality.
 
 ---
 
 ## 🚀 Available Editions
 
-| Edition | File | Server Requirements |
-|---------|------|---------------------|
-| **PHP** | `index.php` | PHP 7.4+ with Apache/Nginx |
-| **JSP** | `jsp/index.jsp` | Java Servlet Container (Tomcat, Jetty, etc.) |
-| **ASP** | `asp/index.asp` | IIS with Classic ASP enabled |
+| Edition | File | Server Requirements | Status |
+|---------|------|---------------------|--------|
+| **PHP** | `index.php` | PHP 7.0+ with Apache/Nginx | ✅ Complete |
+| **Go** | `go/index.go` | Go 1.21+ (standalone binary) | ✅ Complete |
+| **JSP** | `jsp/index.jsp` | Java 8+, Servlet 3.0+ | ✅ Complete |
+| **ASP** | `asp/index.asp` | IIS with Classic ASP | ✅ Complete |
+| **C# ASHX** | `ashx/index.ashx` | IIS + .NET Framework 4.7.2+ | ✅ Complete |
+| **C# ASPX** | `aspx/index.aspx` | IIS + .NET Framework 4.7.2+ | ✅ Complete |
+| **JSPX** | `jspx/index.jspx` | Java 8+, Servlet 3.0+ | ✅ Complete |
 
 ---
 
 ## ✨ Features
 
-- 🔐 **Password-Protected Access** - Secure login with hashed passwords
-- 📁 **File Manager** - Browse, view, and edit server files
-- 🗄️ **Database Client** - Connect to MySQL, PostgreSQL, SQL Server
-- 💻 **Terminal** - Execute system commands directly
-- 📊 **Dashboard** - System info and quick stats
+- 🔐 **Password-Protected Access** - Secure SHA-256 hashed passwords
+- 📁 **File Manager** - Browse, view, edit, upload, download, delete files
+- 🗄️ **Database Client** - MySQL/PostgreSQL support with CSV export
+- 💻 **Terminal** - Execute system commands with output capture
+- 📊 **Dashboard** - System info, disk usage, process user
 - ⚙️ **Settings** - Configuration management
+- 📝 **Error Logging** - Production-safe error messages
 
 ---
 
@@ -31,20 +36,42 @@ A unified, proprietary web admin tool available for multiple server-side platfor
 
 ### PHP Edition
 ```bash
-# Just drop index.php in your web root
+# Single file deployment - requires PHP 7.0+
 cp index.php /var/www/html/admin/
+```
+
+### Go Edition
+```bash
+# Compile and run - single binary, no runtime needed
+cd go/
+go build -o shellello .
+./shellello  # Runs on http://localhost:8080
 ```
 
 ### JSP Edition
 ```bash
-# Deploy to your servlet container's webapps directory
+# Deploy to servlet container
 cp -r jsp/ $CATALINA_HOME/webapps/shellello/
 ```
 
 ### ASP Edition
 ```bash
-# Copy to IIS virtual directory with ASP enabled
+# Copy to IIS virtual directory
 cp -r asp/ C:\inetpub\wwwroot\shellello\
+```
+
+### C# ASHX/ASPX Editions
+```powershell
+# Copy to IIS application directory
+copy ashx\index.ashx C:\inetpub\wwwroot\shellello\
+# or
+copy aspx\*.* C:\inetpub\wwwroot\shellello\
+```
+
+### JSPX Edition
+```bash
+# Deploy like JSP but with XML syntax
+cp jspx/index.jspx $CATALINA_HOME/webapps/shellello/
 ```
 
 ---

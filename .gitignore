@@ -1,7 +1,11 @@
 asp/*
-jsp/*
+jsp/modules
 modules/*
 seed.txt
 old.php
 ARCHITECTURE.modules
 .github/*
+ashx/*
+cs/*
+go/*
+jspx/*
