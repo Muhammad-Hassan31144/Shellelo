@@ -225,8 +225,16 @@ private Map<String, Object> executeCommand(String cmd, String cwd) {
     File workDir = (cwd != null && !cwd.isEmpty()) ? new File(cwd) : new File(System.getProperty("user.dir"));
     String newCwd = workDir.getAbsolutePath();
     try {
-        if (cmd.trim().startsWith("cd ")) {
-            String targetDir = cmd.trim().substring(3).trim();
+        String trimmed = cmd.trim();
+        if (trimmed.equals("cd") || trimmed.equals("cd ~")) {
+            File home = new File(System.getProperty("user.home"));
+            if (home.exists()) {
+                newCwd = home.getCanonicalPath();
+                result.put("output", "Changed directory to: " + newCwd);
+                result.put("exit_code", 0);
+            }
+        } else if (trimmed.startsWith("cd ")) {
+            String targetDir = trimmed.substring(3).trim();
             File target = new File(workDir, targetDir);
             if (target.exists() && target.isDirectory()) {
                 newCwd = target.getCanonicalPath();
@@ -246,15 +254,29 @@ private Map<String, Object> executeCommand(String cmd, String cwd) {
             pb.directory(workDir);
             pb.redirectErrorStream(true);
             Process process = pb.start();
-            BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()));
-            StringBuilder output = new StringBuilder();
-            String line;
-            while ((line = reader.readLine()) != null) {
-                output.append(line).append("\n");
+            
+            // Read output with timeout safety
+            final Process p = process;
+            java.util.concurrent.Future<String> future = java.util.concurrent.Executors.newSingleThreadExecutor().submit(() -> {
+                BufferedReader reader = new BufferedReader(new InputStreamReader(p.getInputStream()));
+                StringBuilder output = new StringBuilder();
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    output.append(line).append("\n");
+                }
+                return output.toString();
+            });
+            
+            try {
+                String out = future.get(10, java.util.concurrent.TimeUnit.SECONDS);
+                result.put("output", out);
+                if (process.isAlive()) process.destroy();
+                result.put("exit_code", process.isAlive() ? -1 : process.exitValue());
+            } catch (java.util.concurrent.TimeoutException e) {
+                process.destroy();
+                result.put("output", "Error: Command timed out");
+                result.put("exit_code", -1);
             }
-            int exitCode = process.waitFor();
-            result.put("output", output.toString());
-            result.put("exit_code", exitCode);
         }
     } catch (Exception e) {
         result.put("output", "Error: " + e.getMessage());
@@ -764,8 +786,8 @@ private String renderTerminalContent(String cwd) {
     sb.append("<div class=\"card\">");
     sb.append("<div class=\"card-header\"><span class=\"card-icon\">💻</span><h3>Terminal</h3></div>");
     sb.append("<div class=\"terminal-container\">");
-    sb.append("<div id=\"terminalOutput\" class=\"terminal-output\">Welcome to JSPX Terminal\\n");
-    sb.append("Current directory: ").append(escapeHtml(cwd)).append("\\n\\n</div>");
+    sb.append("<div id=\"terminalOutput\" class=\"terminal-output\">Welcome to JSPX Terminal\n");
+    sb.append("Current directory: ").append(escapeHtml(cwd)).append("\n\n</div>");
     sb.append("<div class=\"terminal-input\">");
     sb.append("<input type=\"text\" id=\"terminalCmd\" placeholder=\"Enter command...\" onkeypress=\"if(event.key==='Enter')executeCmd()\"/>");
     sb.append("<button class=\"btn btn-sm btn-primary\" onclick=\"executeCmd()\">Run</button>");
@@ -1368,7 +1390,7 @@ function executeCmd() {
 function addToTerminal(text) {
     var output = document.getElementById('terminalOutput');
     if (output) {
-        output.textContent += text + '\\n';
+        output.textContent += text + '\n';
         output.scrollTop = output.scrollHeight;
     }
 }
@@ -1376,7 +1398,7 @@ function addToTerminal(text) {
 function clearTerminal() {
     var output = document.getElementById('terminalOutput');
     if (output) {
-        output.textContent = 'Welcome to JSPX Terminal\\nCurrent directory: ' + terminalCwd + '\\n\\n';
+        output.textContent = 'Welcome to JSPX Terminal\nCurrent directory: ' + terminalCwd + '\n\n';
     }
 }
 
