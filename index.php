@@ -173,6 +173,26 @@ function getServerIp() {
     return $candidates[0] ?? 'Unknown';
 }
 
+function getPortBanner($conn, $target, $port) {
+    $probe = '';
+    $readBytes = 256;
+    // Minimal probes for common protocols
+    if (in_array($port, [80,8080,8000,8081,443,8443])) {
+        $probe = "HEAD / HTTP/1.0\r\nHost: {$target}\r\nConnection: close\r\n\r\n";
+        $readBytes = 512;
+    }
+    if ($probe) {
+        @fwrite($conn, $probe);
+    }
+    $data = @fread($conn, $readBytes);
+    if ($data === false || $data === '') return null;
+    $data = preg_replace('/\s+/', ' ', trim($data));
+    if (strlen($data) > 180) {
+        $data = substr($data, 0, 177) . '...';
+    }
+    return $data ?: null;
+}
+
 function getServerSoftware() {
     return getenv('SERVER_SOFTWARE') ?: ($_SERVER['SERVER_SOFTWARE'] ?? 'CLI');
 }
@@ -485,6 +505,12 @@ function handleApiAction($action) {
                 if ($target === '') throw new Exception('Target required');
 
                 $defaultPorts = [21,22,23,25,53,80,110,135,139,143,443,445,465,587,993,995,1433,1521,2049,3306,3389,5432,5900,6379,8080,8443,9000,11211,27017];
+                $portNames = [
+                    21=>'FTP',22=>'SSH',23=>'Telnet',25=>'SMTP',53=>'DNS',80=>'HTTP',110=>'POP3',135=>'RPC',139=>'NetBIOS',143=>'IMAP',
+                    443=>'HTTPS',445=>'SMB',465=>'SMTPS',587=>'SMTP',993=>'IMAPS',995=>'POP3S',1433=>'MSSQL',1521=>'Oracle',2049=>'NFS',
+                    3306=>'MySQL',3389=>'RDP',5432=>'PostgreSQL',5900=>'VNC',6379=>'Redis',8080=>'HTTP-Alt',8443=>'HTTPS-Alt',
+                    9000=>'FastCGI',11211=>'Memcached',27017=>'MongoDB'
+                ];
                 $ports = $portsRaw ? preg_split('/[\s,;]+/', $portsRaw) : $defaultPorts;
                 $ports = array_values(array_unique(array_filter(array_map('intval', $ports), function($p) {
                     return $p > 0 && $p <= 65535;
@@ -500,8 +526,16 @@ function handleApiAction($action) {
                     $conn = @fsockopen($target, $port, $errno, $errstr, 0.75);
                     $latency = round((microtime(true) - $start) * 1000, 1);
                     if ($conn) {
+                        stream_set_timeout($conn, 1);
+                        $banner = getPortBanner($conn, $target, $port);
                         fclose($conn);
-                        $results[] = ['port' => $port, 'status' => 'open', 'latency_ms' => $latency];
+                        $results[] = [
+                            'port' => $port,
+                            'service' => $portNames[$port] ?? null,
+                            'status' => 'open',
+                            'latency_ms' => $latency,
+                            'banner' => $banner
+                        ];
                         $openCount++;
                     } else {
                         $results[] = ['port' => $port, 'status' => 'closed', 'latency_ms' => $latency];
@@ -2421,6 +2455,7 @@ function renderNetwork() {
 .pill-open { background: rgba(34,197,94,0.15); color: #34d399; border: 1px solid rgba(34,197,94,0.45); }
 .pill-closed { background: rgba(248,113,113,0.15); color: #fca5a5; border: 1px solid rgba(248,113,113,0.4); }
 .flex-row { display: flex; gap: 0.75rem; flex-wrap: wrap; align-items: center; }
+.banner { color: var(--text-muted); }
 </style>
 
 <div class="network-grid">
@@ -2533,9 +2568,15 @@ function renderScan(list) {
     var rows = list.map(function(item) {
         var pill = item.status === 'open' ? '<span class="status-pill pill-open">OPEN</span>' : '<span class="status-pill pill-closed">closed</span>';
         var latency = item.latency_ms ? item.latency_ms + ' ms' : '-';
-        return 'Port ' + item.port + ' ' + pill + ' <span class="text-muted">' + latency + '</span>';
+        var service = item.service ? ' (' + netEsc(item.service) + ')' : '';
+        var banner = item.banner ? ' — <span class="banner">' + netEsc(item.banner) + '</span>' : '';
+        return 'Port ' + item.port + service + ' ' + pill + ' <span class="text-muted">' + latency + '</span>' + banner;
     });
     document.getElementById('scanResult').innerHTML = rows.join('<br>');
+}
+
+function netEsc(s) {
+    return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 }
 
 function remoteDownload() {
