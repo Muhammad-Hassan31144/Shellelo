@@ -943,11 +943,11 @@
         html.append("        const owner = f.owner || 'unknown';\n");
         html.append("        const date = new Date(f.modified).toLocaleString();\n");
         html.append("        \n");
-        html.append("        tr.innerHTML = '<td style=\"cursor:pointer;\" onclick=\"' + (f.isDir ? 'loadFiles(\\'' + escapeAttr(currentPath + '/' + f.name) + '\\')' : 'editFile(\\'' + escapeAttr(currentPath + '/' + f.name) + '\\')') + '\">' + icon + ' ' + escapeHtml(f.name) + '</td>' +\n");
-        html.append("            '<td>' + size + '</td>' +\n");
-        html.append("            '<td style="color:#94a3b8;">' + owner + '</td>' +\n");
-        html.append("            '<td>' + date + '</td>' +\n");
-        html.append("            '<td><button class=\"btn btn-secondary\" style=\"padding:4px 8px;font-size:12px;margin-right:4px;\" onclick=\"renameItem(\\'' + escapeAttr(f.name) + '\\')\">Rename</button>' +\n");
+        html.append("        tr.innerHTML = '<td style=\\\"cursor:pointer;\\\" onclick=\\\"' + (f.isDir ? 'loadFiles(\\\\'' + escapeAttr(currentPath + '/' + f.name) + '\\\\')' : 'editFile(\\\\'' + escapeAttr(currentPath + '/' + f.name) + '\\\\')') + '\\\">' + icon + ' ' + escapeHtml(f.name) + '</td>' +\\n");
+        html.append("            '<td>' + size + '</td>' +\\n");
+        html.append("            '<td style=\\\"color:#94a3b8;\\\">' + owner + '</td>' +\\n");
+        html.append("            '<td>' + date + '</td>' +\\n");
+        html.append("            '<td><button class=\\\"btn btn-secondary\\\" style=\\\"padding:4px 8px;font-size:12px;margin-right:4px;\\\" onclick=\\\"renameItem(\\\\'' + escapeAttr(f.name) + '\\\\')\\\">Rename</button>' +\\n");
         html.append("            '<button class=\"btn btn-danger\" style=\"padding:4px 8px;font-size:12px;\" onclick=\"deleteItem(\\'' + escapeAttr(f.name) + '\\')\">Delete</button></td>';\n");
         html.append("        tbody.appendChild(tr);\n");
         html.append("    });\n");
@@ -1134,9 +1134,9 @@
             html.append("    <div class=\"card\">\n");
             html.append("        <div class=\"card-header\">Query</div>\n");
             html.append("        <textarea id=\"queryInput\" style=\"width:100%;height:120px;resize:vertical;font-family:monospace;\" placeholder=\"SELECT * FROM ...\"></textarea>\n");
-        html.append("        <div style="margin-top:12px;display:flex;gap:12px;">\n");
+            html.append("        <div style=\"margin-top:12px;display:flex;gap:12px;\">\n");
             html.append("            <button class=\"btn btn-primary\" onclick=\"executeQuery()\">Execute</button>\n");
-        html.append("            <button class="btn btn-success" id="exportCsvBtn" onclick="exportCsv()" style="display:none;">📥 Export CSV</button>\n");
+            html.append("            <button class=\"btn btn-success\" id=\"exportCsvBtn\" onclick=\"exportCsv()\" style=\"display:none;\">📥 Export CSV</button>\n");
             html.append("        </div>\n");
             html.append("        <div id=\"queryResult\" style=\"margin-top:20px;overflow-x:auto;\"></div>\n");
             html.append("    </div>\n");
