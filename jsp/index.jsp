@@ -737,24 +737,22 @@
         html.append("    <title>").append(appName).append("</title>\n");
         html.append("    <style>\n");
         html.append("        * { margin: 0; padding: 0; box-sizing: border-box; }\n");
-        html.append("        body { font-family: -apple-system, BlinkMacSystemFont, \"Segoe UI\", Roboto, sans-serif; background: #0f172a; color: #e2e8f0; display: flex; min-height: 100vh; }\n");
-        html.append("        .sidebar { width: 260px; background: #1e293b; border-right: 1px solid #334155; padding: 20px 0; display: flex; flex-direction: column; }\n");
-        html.append("        .sidebar-header { padding: 0 20px 20px; border-bottom: 1px solid #334155; }\n");
-        html.append("        .sidebar-header h1 { font-size: 20px; color: #fff; }\n");
-        html.append("        .sidebar-header span { font-size: 12px; color: #64748b; }\n");
-        html.append("        .nav { flex: 1; padding: 20px 0; }\n");
-        html.append("        .nav a { display: flex; align-items: center; padding: 12px 20px; color: #94a3b8; text-decoration: none; transition: all 0.2s; gap: 12px; }\n");
+        html.append("        body { font-family: -apple-system, BlinkMacSystemFont, \"Segoe UI\", Roboto, sans-serif; background: #0f172a; color: #e2e8f0; min-height: 100vh; display: flex; flex-direction: column; }\n");
+        html.append("        .top-bar { background: #1e293b; border-bottom: 1px solid #334155; display: flex; align-items: center; padding: 0; }\n");
+        html.append("        .brand { padding: 16px 24px; border-right: 1px solid #334155; display: flex; align-items: center; gap: 12px; min-width: 240px; }\n");
+        html.append("        .brand h1 { font-size: 18px; color: #fff; }\n");
+        html.append("        .brand span { font-size: 11px; color: #64748b; }\n");
+        html.append("        .nav { display: flex; flex: 1; padding: 0; }\n");
+        html.append("        .nav a { display: flex; align-items: center; padding: 16px 24px; color: #94a3b8; text-decoration: none; transition: all 0.2s; gap: 8px; border-bottom: 3px solid transparent; }\n");
         html.append("        .nav a:hover { background: #334155; color: #fff; }\n");
-        html.append("        .nav a.active { background: linear-gradient(90deg, #4f46e5, transparent); color: #fff; border-left: 3px solid #4f46e5; }\n");
-        html.append("        .nav-icon { font-size: 18px; }\n");
-        html.append("        .main { flex: 1; display: flex; flex-direction: column; }\n");
-        html.append("        .header { background: #1e293b; padding: 16px 24px; border-bottom: 1px solid #334155; display: flex; justify-content: space-between; align-items: center; }\n");
-        html.append("        .header h2 { font-size: 18px; font-weight: 600; }\n");
-        html.append("        .header-actions { display: flex; gap: 12px; align-items: center; }\n");
-        html.append("        .session-time { color: #64748b; font-size: 14px; }\n");
-        html.append("        .btn-logout { background: #dc2626; color: #fff; border: none; padding: 8px 16px; border-radius: 6px; cursor: pointer; font-size: 14px; text-decoration: none; }\n");
+        html.append("        .nav a.active { background: #0f172a; color: #fff; border-bottom-color: #4f46e5; }\n");
+        html.append("        .nav-icon { font-size: 16px; }\n");
+        html.append("        .header-actions { display: flex; gap: 12px; align-items: center; padding: 0 24px; border-left: 1px solid #334155; }\n");
+        html.append("        .session-time { color: #64748b; font-size: 13px; }\n");
+        html.append("        .btn-logout { background: #dc2626; color: #fff; border: none; padding: 8px 16px; border-radius: 6px; cursor: pointer; font-size: 13px; text-decoration: none; }\n");
         html.append("        .btn-logout:hover { background: #b91c1c; }\n");
-        html.append("        .content { flex: 1; padding: 24px; overflow-y: auto; }\n");
+        html.append("        .main { flex: 1; display: flex; flex-direction: column; }\n");
+        html.append("        .content { flex: 1; padding: 24px; overflow-y: auto; max-width: 100%; }\n");
         html.append("        .card { background: #1e293b; border: 1px solid #334155; border-radius: 12px; padding: 20px; margin-bottom: 20px; }\n");
         html.append("        .card-header { font-size: 16px; font-weight: 600; margin-bottom: 16px; color: #fff; }\n");
         html.append("        .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 20px; }\n");
@@ -781,27 +779,26 @@
         html.append("    </style>\n");
         html.append("</head>\n");
         html.append("<body>\n");
-        html.append("    <div class=\"sidebar\">\n");
-        html.append("        <div class=\"sidebar-header\">\n");
-        html.append("            <h1>").append(appName).append("</h1>\n");
-        html.append("            <span>v").append(appVersion).append(" - JSP</span>\n");
+        html.append("    <div class=\"top-bar\">\n");
+        html.append("        <div class=\"brand\">\n");
+        html.append("            <div>\n");
+        html.append("                <h1>").append(appName).append("</h1>\n");
+        html.append("                <span>v").append(appVersion).append(" - JSP</span>\n");
+        html.append("            </div>\n");
         html.append("        </div>\n");
         html.append("        <nav class=\"nav\">\n");
         html.append("            <a href=\"?page=dashboard\" class=\"").append("dashboard".equals(currentPage) ? "active" : "").append("\"><span class=\"nav-icon\">📊</span> Dashboard</a>\n");
-        html.append("            <a href=\"?page=files\" class=\"").append("files".equals(currentPage) ? "active" : "").append("\"><span class=\"nav-icon\">📁</span> File Manager</a>\n");
+        html.append("            <a href=\"?page=files\" class=\"").append("files".equals(currentPage) ? "active" : "").append("\"><span class=\"nav-icon\">📁</span> Files</a>\n");
         html.append("            <a href=\"?page=database\" class=\"").append("database".equals(currentPage) ? "active" : "").append("\"><span class=\"nav-icon\">🗄️</span> Database</a>\n");
         html.append("            <a href=\"?page=terminal\" class=\"").append("terminal".equals(currentPage) ? "active" : "").append("\"><span class=\"nav-icon\">💻</span> Terminal</a>\n");
         html.append("            <a href=\"?page=settings\" class=\"").append("settings".equals(currentPage) ? "active" : "").append("\"><span class=\"nav-icon\">⚙️</span> Settings</a>\n");
         html.append("        </nav>\n");
+        html.append("        <div class=\"header-actions\">\n");
+        html.append("            <span class=\"session-time\">Session: ").append(getSessionTime(sess)).append("</span>\n");
+        html.append("            <a href=\"?logout=1\" class=\"btn-logout\">Logout</a>\n");
+        html.append("        </div>\n");
         html.append("    </div>\n");
         html.append("    <div class=\"main\">\n");
-        html.append("        <div class=\"header\">\n");
-        html.append("            <h2>").append(getPageTitle(currentPage)).append("</h2>\n");
-        html.append("            <div class=\"header-actions\">\n");
-        html.append("                <span class=\"session-time\">Session: ").append(getSessionTime(sess)).append("</span>\n");
-        html.append("                <a href=\"?logout=1\" class=\"btn-logout\">Logout</a>\n");
-        html.append("            </div>\n");
-        html.append("        </div>\n");
         html.append("        <div class=\"content\">\n");
         
         return html.toString();
@@ -1020,11 +1017,13 @@
         html.append("            const clickHandler = action + '(decodeURIComponent(\\'' + safePath + '\\'))';\n");
         html.append("            // --- FIX END ---\n");
         html.append("            \n");
+        html.append("            const editBtn = f.isDir ? '' : '<button class=\\\\\\\"btn btn-primary\\\\\\\" style=\\\\\\\"padding:4px 8px;font-size:12px;margin-right:4px;\\\\\\\" onclick=\\\\\\\"editFile(decodeURIComponent(\\\\\\'\\' + safePath + \\'\\\\\\'\\))\\\\\\\"\\>Edit</button>';\n");
+        html.append("            \n");
         html.append("            tr.innerHTML = '<td style=\\\"cursor:pointer;\\\" onclick=\\\"' + clickHandler + '\\\">' + icon + ' ' + escapeHtml(f.name) + '</td>' + \n");
         html.append("                '<td>' + size + '</td>' + \n");
         html.append("                '<td style=\\\"color:#94a3b8;\\\">' + owner + '</td>' + \n");
         html.append("                '<td>' + date + '</td>' + \n");
-        html.append("                '<td><button class=\\\"btn btn-secondary\\\" style=\\\"padding:4px 8px;font-size:12px;margin-right:4px;\\\" onclick=\\\"renameItem(decodeURIComponent(\\'' + safeName + '\\'))\\\">Rename</button>' + \n");
+        html.append("                '<td>' + editBtn + '<button class=\\\"btn btn-secondary\\\" style=\\\"padding:4px 8px;font-size:12px;margin-right:4px;\\\" onclick=\\\"renameItem(decodeURIComponent(\\'' + safeName + '\\'))\\\">Rename</button>' + \n");
         html.append("                '<button class=\\\"btn btn-danger\\\" style=\\\"padding:4px 8px;font-size:12px;\\\" onclick=\\\"deleteItem(decodeURIComponent(\\'' + safeName + '\\'))\\\">Delete</button></td>';\n");
         html.append("            tbody.appendChild(tr);\n");
         html.append("        });\n");
@@ -1388,8 +1387,8 @@ html.append("\n");
         
         StringBuilder html = new StringBuilder();
         
-        html.append("<div class=\"card\" style=\"height:calc(100vh - 180px);display:flex;flex-direction:column;\">\n");
-        html.append("    <div id=\"terminalOutput\" style=\"flex:1;background:#0f172a;border-radius:8px;padding:16px;font-family:monospace;font-size:14px;overflow-y:auto;white-space:pre-wrap;margin-bottom:16px;\"></div>\n");
+        html.append("<div class=\"card\" style=\"height:calc(100vh - 140px);display:flex;flex-direction:column;max-width:100%;\">\n");
+        html.append("    <div id=\"terminalOutput\" style=\"flex:1;background:#0f172a;border-radius:8px;padding:16px;font-family:monospace;font-size:14px;overflow-y:auto;overflow-x:auto;white-space:pre-wrap;word-wrap:break-word;overflow-wrap:break-word;margin-bottom:16px;\"></div>\n");
         html.append("    <div style=\"display:flex;gap:12px;align-items:center;\">\n");
         html.append("        <span style=\"color:#10b981;\">$</span>\n");
         html.append("        <input type=\"text\" id=\"terminalInput\" style=\"flex:1;font-family:monospace;\" placeholder=\"Enter command...\" autofocus>\n");
@@ -1529,6 +1528,64 @@ html.append("\n");
         html.append("        <tr><td style=\"color:#94a3b8;\">Used Memory</td><td>").append(formatBytes(totalMem - freeMem)).append("</td></tr>\n");
         html.append("        <tr><td style=\"color:#94a3b8;\">Available Processors</td><td>").append(runtime.availableProcessors()).append("</td></tr>\n");
         html.append("    </table>\n");
+        html.append("</div>\n");
+        
+        // Network Info
+        html.append("<div class=\"card\">\n");
+        html.append("    <div class=\"card-header\">Network Information</div>\n");
+        html.append("    <div style=\"max-height:400px;overflow-y:auto;\">\n");
+        
+        try {
+            String os = System.getProperty("os.name").toLowerCase();
+            String command = "";
+            
+            if (os.contains("win")) {
+                command = "ipconfig";
+            } else if (os.contains("nix") || os.contains("nux") || os.contains("mac")) {
+                // Try multiple commands to get network info
+                String[] commands = {"ip a", "/sbin/ip a", "ifconfig", "/sbin/ifconfig"};
+                for (String cmd : commands) {
+                    try {
+                        ProcessBuilder pb = new ProcessBuilder();
+                        pb.command("bash", "-c", "which " + cmd.split(" ")[0] + " 2>/dev/null");
+                        Process p = pb.start();
+                        p.waitFor();
+                        if (p.exitValue() == 0) {
+                            command = cmd;
+                            break;
+                        }
+                    } catch (Exception e) {
+                        // Try next command
+                    }
+                }
+            }
+            
+            if (!command.isEmpty()) {
+                ProcessBuilder pb = new ProcessBuilder();
+                if (os.contains("win")) {
+                    pb.command("cmd", "/c", command);
+                } else {
+                    pb.command("bash", "-c", command);
+                }
+                pb.redirectErrorStream(true);
+                Process process = pb.start();
+                BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()));
+                StringBuilder output = new StringBuilder();
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    output.append(line).append("\n");
+                }
+                process.waitFor();
+                
+                html.append("    <pre style=\"background:#0f172a;padding:16px;border-radius:8px;overflow-x:auto;white-space:pre-wrap;word-wrap:break-word;color:#e2e8f0;font-size:13px;margin:0;\">").append(escapeHtml(output.toString())).append("</pre>\n");
+            } else {
+                html.append("    <p style=\"color:#94a3b8;padding:16px;\">Network configuration tools not available</p>\n");
+            }
+        } catch (Exception e) {
+            html.append("    <p style=\"color:#ef4444;padding:16px;\">Error retrieving network info: ").append(escapeHtml(e.getMessage())).append("</p>\n");
+        }
+        
+        html.append("    </div>\n");
         html.append("</div>\n");
         
         // Environment
