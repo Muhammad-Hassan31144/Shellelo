@@ -1069,9 +1069,7 @@
         html.append("            showToast('Error saving file: ' + err.message, 'error');\n");
         html.append("        });\n");
         html.append("}\n");
-        html.append("\n");const separator = currentPath.endsWith('/') ? '' : '/';\n");
-        html.append("        editingFile = normalizePath(currentPath + separator + name);\n");
-        html.append("        console.log('showNewFile: path:', editingFile)
+        html.append("\n");
         html.append("function closeEditor() {\n");
         html.append("    document.getElementById('editorModal').style.display = 'none';\n");
         html.append("    editingFile = null;\n");
@@ -1080,7 +1078,9 @@
         html.append("function showNewFile() {\n");
         html.append("    const name = prompt('Enter file name:');\n");
         html.append("    if (name) {\n");
-        html.append("        editingFile = currentPath + '/' + name;\n");
+        html.append("        const separator = currentPath.endsWith('/') ? '' : '/';\n");
+        html.append("        editingFile = normalizePath(currentPath + separator + name);\n");
+        html.append("        console.log('showNewFile: path:', editingFile);\n");
         html.append("        document.getElementById('editorTitle').textContent = editingFile;\n");
         html.append("        document.getElementById('editorContent').value = '';\n");
         html.append("        document.getElementById('editorModal').style.display = 'block';\n");
