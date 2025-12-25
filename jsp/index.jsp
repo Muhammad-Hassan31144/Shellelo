@@ -696,7 +696,7 @@
     // LAYOUT RENDERER
     // ==========================================
     
-    public static String renderLayoutStart(String page, String appName, String appVersion, HttpSession sess) {
+    public static String renderLayoutStart(String currentPage, String appName, String appVersion, HttpSession sess) {
         StringBuilder html = new StringBuilder();
         html.append("<!DOCTYPE html>\n");
         html.append("<html lang=\"en\">\n");
@@ -756,16 +756,16 @@
         html.append("            <span>v").append(appVersion).append(" - JSP</span>\n");
         html.append("        </div>\n");
         html.append("        <nav class=\"nav\">\n");
-        html.append("            <a href=\"?page=dashboard\" class=\"").append("dashboard".equals(page) ? "active" : "").append("\"><span class=\"nav-icon\">📊</span> Dashboard</a>\n");
-        html.append("            <a href=\"?page=files\" class=\"").append("files".equals(page) ? "active" : "").append("\"><span class=\"nav-icon\">📁</span> File Manager</a>\n");
-        html.append("            <a href=\"?page=database\" class=\"").append("database".equals(page) ? "active" : "").append("\"><span class=\"nav-icon\">🗄️</span> Database</a>\n");
-        html.append("            <a href=\"?page=terminal\" class=\"").append("terminal".equals(page) ? "active" : "").append("\"><span class=\"nav-icon\">💻</span> Terminal</a>\n");
-        html.append("            <a href=\"?page=settings\" class=\"").append("settings".equals(page) ? "active" : "").append("\"><span class=\"nav-icon\">⚙️</span> Settings</a>\n");
+        html.append("            <a href=\"?page=dashboard\" class=\"").append("dashboard".equals(currentPage) ? "active" : "").append("\"><span class=\"nav-icon\">📊</span> Dashboard</a>\n");
+        html.append("            <a href=\"?page=files\" class=\"").append("files".equals(currentPage) ? "active" : "").append("\"><span class=\"nav-icon\">📁</span> File Manager</a>\n");
+        html.append("            <a href=\"?page=database\" class=\"").append("database".equals(currentPage) ? "active" : "").append("\"><span class=\"nav-icon\">🗄️</span> Database</a>\n");
+        html.append("            <a href=\"?page=terminal\" class=\"").append("terminal".equals(currentPage) ? "active" : "").append("\"><span class=\"nav-icon\">💻</span> Terminal</a>\n");
+        html.append("            <a href=\"?page=settings\" class=\"").append("settings".equals(currentPage) ? "active" : "").append("\"><span class=\"nav-icon\">⚙️</span> Settings</a>\n");
         html.append("        </nav>\n");
         html.append("    </div>\n");
         html.append("    <div class=\"main\">\n");
         html.append("        <div class=\"header\">\n");
-        html.append("            <h2>").append(getPageTitle(page)).append("</h2>\n");
+        html.append("            <h2>").append(getPageTitle(currentPage)).append("</h2>\n");
         html.append("            <div class=\"header-actions\">\n");
         html.append("                <span class=\"session-time\">Session: ").append(getSessionTime(sess)).append("</span>\n");
         html.append("                <a href=\"?logout=1\" class=\"btn-logout\">Logout</a>\n");
@@ -780,8 +780,8 @@
         return "        </div>\n    </div>\n</body>\n</html>\n";
     }
     
-    private static String getPageTitle(String page) {
-        switch (page) {
+    private static String getPageTitle(String currentPage) {
+        switch (currentPage) {
             case "files": return "File Manager";
             case "database": return "Database Manager";
             case "terminal": return "Terminal";
@@ -1440,12 +1440,12 @@ html.append("\n");
     }
     
     // Route to pages
-    page = request.getParameter("page");
-    if (page == null) page = "dashboard";
+    String currentPage = request.getParameter("page");
+    if (currentPage == null) currentPage = "dashboard";
     
-    out.print(renderLayoutStart(page, APP_NAME, APP_VERSION, session));
+    out.print(renderLayoutStart(currentPage, APP_NAME, APP_VERSION, session));
     
-    switch (page) {
+    switch (currentPage) {
         case "files":
             out.print(renderFileManagerContent());
             break;
