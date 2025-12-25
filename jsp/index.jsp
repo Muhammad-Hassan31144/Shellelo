@@ -391,6 +391,7 @@
         String cwd = request.getParameter("cwd");
         
         StringBuilder output = new StringBuilder();
+        String newCwd = cwd;
         try {
             ProcessBuilder pb = new ProcessBuilder();
             String os = System.getProperty("os.name").toLowerCase();
@@ -399,9 +400,15 @@
             } else {
                 pb.command("bash", "-c", command);
             }
+            
+            File workDir = null;
             if (cwd != null && !cwd.isEmpty()) {
-                pb.directory(new File(cwd));
+                workDir = new File(cwd);
+                pb.directory(workDir);
+            } else {
+                workDir = new File(System.getProperty("user.dir"));
             }
+            
             pb.redirectErrorStream(true);
             Process process = pb.start();
             BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()));
@@ -410,7 +417,31 @@
                 output.append(line).append("\n");
             }
             process.waitFor();
-            out.print("{\"status\":\"success\",\"output\":\"" + escapeJs(output.toString()) + "\"}");
+            
+            // Handle cd command - update working directory
+            if (command.trim().startsWith("cd ")) {
+                String targetPath = command.trim().substring(3).trim();
+                if (targetPath.equals("~")) {
+                    newCwd = System.getProperty("user.home");
+                } else if (targetPath.equals("-")) {
+                    // Stay at current directory for simplicity
+                    newCwd = workDir.getAbsolutePath();
+                } else {
+                    File target = new File(targetPath);
+                    if (!target.isAbsolute()) {
+                        target = new File(workDir, targetPath);
+                    }
+                    if (target.exists() && target.isDirectory()) {
+                        newCwd = target.getCanonicalPath();
+                    } else {
+                        newCwd = workDir.getAbsolutePath();
+                    }
+                }
+            } else {
+                newCwd = workDir.getAbsolutePath();
+            }
+            
+            out.print("{\"status\":\"success\",\"output\":\"" + escapeJs(output.toString()) + "\",\"cwd\":\"" + escapeJs(newCwd) + "\"}");
         } catch (Exception e) {
             out.print("{\"status\":\"error\",\"message\":\"" + escapeJs(e.getMessage()) + "\"}");
         }
