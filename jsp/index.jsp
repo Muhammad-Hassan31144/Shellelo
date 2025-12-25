@@ -134,7 +134,7 @@
     }
     
     public static void logError(String context, Exception e) {
-        System.err.println("[" + new Date() + "] " + context + ": " + e.getMessage());
+        System.err.println("[" + new java.util.Date() + "] " + context + ": " + e.getMessage());
         if (DEBUG_MODE) {
             e.printStackTrace();
         }
@@ -1194,10 +1194,10 @@
         html.append("                });\n");
         html.append("                html += '</tbody></table>';\n");
         html.append("                document.getElementById('queryResult').innerHTML = html;\n");
-                document.getElementById('exportCsvBtn').style.display = 'inline-block';
+        html.append("                document.getElementById('exportCsvBtn').style.display = 'inline-block';\n");
         html.append("            } else if (data.affected !== undefined) {\n");
         html.append("                document.getElementById('queryResult').innerHTML = '<p style=\"color:#10b981;\">Query executed. Rows affected: ' + data.affected + '</p>';\n");
-                document.getElementById('exportCsvBtn').style.display = 'none';
+        html.append("                document.getElementById('exportCsvBtn').style.display = 'none';\n");
         html.append("            } else {\n");
         html.append("                document.getElementById('queryResult').innerHTML = '<p style=\"color:#ef4444;\">' + data.message + '</p>';\n");
         html.append("            }\n");
@@ -1440,7 +1440,7 @@ html.append("\n");
     }
     
     // Route to pages
-    String page = request.getParameter("page");
+    page = request.getParameter("page");
     if (page == null) page = "dashboard";
     
     out.print(renderLayoutStart(page, APP_NAME, APP_VERSION, session));
