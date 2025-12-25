@@ -2396,6 +2396,7 @@ function esc(s) {
 
 function renderNetwork() {
     $defaultPorts = '21,22,23,25,53,80,110,135,139,143,443,445,465,587,993,995,1433,1521,2049,3306,3389,5432,5900,6379,8080,8443,9000,11211,27017';
+    $defaultPortsPreview = '21,22,23,25,53,80,110,135,139,143,443,445…';
     ob_start();
 ?>
 <style>
@@ -2405,7 +2406,7 @@ function renderNetwork() {
 .form-group label { font-weight: 500; color: var(--text); }
 .section-header { display: flex; align-items: center; gap: 0.75rem; margin-bottom: 1rem; padding-bottom: 1rem; border-bottom: 1px solid var(--border); }
 .section-header h3 { margin: 0; font-size: 1.1rem; }
-.hint { color: var(--text-muted); font-size: 0.9rem; }
+.hint { color: var(--text-muted); font-size: 0.9rem; white-space: normal; word-break: break-word; }
 .result-box {
     background: var(--card-muted);
     border: 1px solid var(--border);
@@ -2436,7 +2437,7 @@ function renderNetwork() {
             <div class="form-group">
                 <label>Ports</label>
                 <textarea id="scanPorts" class="form-control" rows="3" placeholder="Comma or space separated list. Leave empty to use common ports."></textarea>
-                <div class="hint">Default: <?php echo htmlspecialchars($defaultPorts); ?></div>
+                <div class="hint">Default (<?php echo substr_count($defaultPorts, ',') + 1; ?> ports): <?php echo htmlspecialchars($defaultPortsPreview); ?> — click "Use Default" to fill all.</div>
             </div>
             <div class="flex-row" style="margin-top:0.5rem;">
                 <button class="btn btn-primary" onclick="scanPorts()" id="scanBtn">🔍 Scan</button>
